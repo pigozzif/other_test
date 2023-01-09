@@ -53,8 +53,8 @@ class Solver(object):
             return NSGAII(**kwargs)
         elif name == "es":
             return EvolutionaryStrategy(**kwargs)
-        elif name == "kmeans":
-            return KMeansStrategy(**kwargs)
+        elif name == "multimodal":
+            return MultimodalStrategy(**kwargs)
         raise ValueError("Invalid solver name: {}".format(name))
 
 
@@ -88,7 +88,6 @@ class EvolutionarySolver(Solver):
 
     def solve(self, max_hours_runtime, max_gens) -> None:
         self.start_time = time.time()
-
         # generation zero
         self.evaluate_individuals()
         self.best_so_far = self.get_best()
@@ -174,7 +173,7 @@ class EvolutionaryStrategy(EvolutionarySolver):
     def update_mode(self) -> None:
         noise = np.array([(x.genotype - self.mode) / self.sigma for x in self.pop])
         fitness = np.array([x.fitness["fitness_score"] for x in self.pop])
-        self.best_fitness = np.min(fitness)
+        self.best_fitness = np.max(fitness)
         theta_grad = (1.0 / (self.pop_size * self.sigma)) * np.dot(noise.T, fitness)
         self.mode = self.optimizer.optimize(mean=self.mode, t=self.pop.gen, theta_grad=theta_grad)
 
@@ -194,7 +193,7 @@ class EvolutionaryStrategy(EvolutionarySolver):
         return self.temp_best
 
 
-class KMeansStrategy(EvolutionarySolver):
+class MultimodalStrategy(EvolutionarySolver):
 
     def __init__(self, seed, pop_size, genotype_factory, solution_mapper, clustering: str, elite_ratio: float,
                  sigma: float, sigma_decay: float, sigma_limit: float, num_dims: int, l_rate_init: float,
@@ -226,7 +225,7 @@ class KMeansStrategy(EvolutionarySolver):
         return self.mixture.sample(self.pop_size)[0]
 
     def update_modes(self) -> None:
-        self.best_fitness = min([x.fitness["fitness_score"] for x in self.pop])
+        self.best_fitness = max([x.fitness["fitness_score"] for x in self.pop])
         if self.clustering == "kmeans":
             self.mixture.means_ = self.optimizer.fit([ind.genotype for ind in sorted(self.pop, key=lambda x: x.fitness["fitness_score"])[:int(self.elite_ratio * self.pop_size)]]).cluster_centers_
         else:

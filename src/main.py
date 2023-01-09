@@ -26,9 +26,6 @@ def parse_args():
     parser.add_argument("--output_dir", default="output", type=str,
                         help="relative path to output dir")
     parser.add_argument("--fitness", default="fitness_score", type=str, help="fitness tag")
-    parser.add_argument("--num_dims", default=10, type=int, help="number of problem dimensions")
-    parser.add_argument("--num_targets", default=1, type=int, help="number of targets")
-    parser.add_argument("--num_clusters", default=1, type=int, help="number of clusters")
     parser.add_argument("--clustering", default=None, type=str, help="clustering algorithm")
     parser.add_argument("--problem", default=None, type=int, help="CEC2013 problem to test")
     parser.add_argument("--visualize", default=0, type=int, help="visualize evolution")
@@ -47,7 +44,7 @@ class MyListener(Listener):
         with open(self._file, "a") as file:
             file.write(self._delimiter.join([str(solver.pop.gen), str(solver.elapsed_time()),
                                              str(solver.get_best_fitness()),
-                                             str(len(count) // solver.fitness_func.function.get_no_goptima())]))
+                                             str(count // solver.fitness_func.function.get_no_goptima())]) + "\n")
 
 
 class VizListener(Listener):
@@ -63,11 +60,14 @@ class VizListener(Listener):
         if solver.fitness_func.function.get_dimension() != 2:
             raise ValueError("Visualizing a non-bidimensional function")
         self._inner_listener.listen(solver=solver)
-        x_axis = np.arange(solver.get_lbound()[0], solver.get_ubound()[0], 0.05)
-        y_axis = np.arange(solver.get_lbound()[1], solver.get_ubound()[1], 0.05)
+        x_axis = np.arange(solver.fitness_func.function.get_lbound(0),
+                           solver.fitness_func.function.get_ubound(0), 0.05)
+        y_axis = np.arange(solver.fitness_func.function.get_lbound(1),
+                           solver.fitness_func.function.get_ubound(1), 0.05)
         x, y = np.meshgrid(x_axis, y_axis)
-        results = np.array([[solver.fitness_func.evaluate(x=np.array([x[i, j], y[i, j]])) for i in range(len(x_axis))]
-                            for j in range(len(y_axis))])
+        results = np.array([[solver.fitness_func.function.evaluate(x=np.array([x[j, i], y[j, i]]))
+                             for i in range(x.shape[1])]
+                            for j in range(x.shape[0])])
         plt.pcolormesh(x_axis, y_axis, results, cmap="plasma")
         plt.scatter([ind.genotype[0] for ind in solver.pop], [ind.genotype[1] for ind in solver.pop], marker="x",
                     color="red")
@@ -91,16 +91,16 @@ class MyFitness(FitnessFunction):
         self.function = function
 
     def create_objectives_dict(self):
-        self.objective_dict.add_objective(name="fitness_score", maximize=False,
-                                          tag="<{}>".format("fitness_score"),
-                                          best_value=0.0, worst_value=float("inf"))
+        self.objective_dict.add_objective(name="fitness_score", maximize=True,
+                                          best_value=self.function.get_fitness_goptima(),
+                                          worst_value=float("-inf"))
         return self.objective_dict
 
     def get_fitness(self, individual):
-        return {"fitness_score": self.evaluate(x=individual.genotype)}
-
-    def evaluate(self, x):
-        return self.function.evaluate(x=x)
+        fit = self.function.evaluate(x=individual.genotype)
+        if not isinstance(fit, float):
+            fit = fit[0]
+        return {"fitness_score": fit if fit is not None else float("-inf")}
 
 
 if __name__ == "__main__":
@@ -108,38 +108,57 @@ if __name__ == "__main__":
     set_seed(arguments.seed)
     seed = arguments.seed
     if arguments.visualize == 1:
-        listener = VizListener(file_path=".".join([str(arguments.clustering), str(seed), str(arguments.num_clusters),
-                                                   str(arguments.num_dims), str(arguments.num_targets), "txt"]),
+        listener = VizListener(file_path=".".join([str(arguments.solver), str(seed), str(arguments.problem), "txt"]),
                                header=["iteration", "elapsed.time", "best.fitness", "avg.distance", "distances"])
     else:
-        listener = MyListener(file_path=".".join([str(arguments.clustering), str(seed), str(arguments.num_clusters),
-                                                  str(arguments.num_dims), str(arguments.num_targets), "txt"]),
+        listener = MyListener(file_path=".".join([str(arguments.solver), str(seed), str(arguments.problem), "txt"]),
                               header=["iteration", "elapsed.time", "best.fitness", "avg.distance", "distances"])
     fitness = MyFitness(function=CEC2013(arguments.problem))
     number_of_params = fitness.function.get_dimension()
+    gens = fitness.function.get_maxfes() // arguments.popsize
     if arguments.solver == "es":
-        evolver = Solver.create_solver(name="es", seed=seed, pop_size=arguments.popsize, num_dims=number_of_params,
+        evolver = Solver.create_solver(name="es",
+                                       seed=seed,
+                                       pop_size=arguments.popsize,
+                                       num_dims=number_of_params,
                                        genotype_factory="uniform_float",
                                        solution_mapper="direct",
                                        fitness_func=fitness,
                                        listener=listener,
-                                       sigma=0.3, sigma_decay=0.999, sigma_limit=0.01, l_rate_init=0.02,
-                                       l_rate_decay=0.999, l_rate_limit=0.001,
-                                       range=get_bound(fitness.function), upper=2.0, lower=-1.0)
-    elif arguments.solver == "kmeans":
-        evolver = Solver.create_solver(name="kmeans", seed=seed, pop_size=arguments.popsize, num_dims=number_of_params,
-                                       num_modes=fitness.function.get_no_goptima(), genotype_factory="uniform_float",
+                                       sigma=0.3,
+                                       sigma_decay=0.999,
+                                       sigma_limit=0.01,
+                                       l_rate_init=0.02,
+                                       l_rate_decay=0.999,
+                                       l_rate_limit=0.001,
+                                       range=get_bound(fitness.function),
+                                       upper=2.0,
+                                       lower=-1.0)
+    elif arguments.solver == "kmeans" or arguments.solver == "em":
+        evolver = Solver.create_solver(name="multimodal",
+                                       seed=seed,
+                                       pop_size=arguments.popsize,
+                                       num_dims=number_of_params,
+                                       num_modes=fitness.function.get_no_goptima(),
+                                       genotype_factory="uniform_float",
                                        solution_mapper="direct",
                                        fitness_func=fitness,
-                                       listener=listener, elite_ratio=0.5, clustering=arguments.clustering,
-                                       sigma=0.3, sigma_decay=1.0 - 1.0 / arguments.gens, sigma_limit=0.01,
-                                       l_rate_init=0.02, l_rate_decay=0.999, l_rate_limit=0.001,
+                                       listener=listener,
+                                       elite_ratio=0.5,
+                                       clustering=arguments.solver,
+                                       sigma=0.3,
+                                       sigma_decay=1.0 - 1.0 / gens,
+                                       sigma_limit=0.01,
+                                       l_rate_init=0.02,
+                                       l_rate_decay=0.999,
+                                       l_rate_limit=0.001,
                                        range=get_bound(fitness.function),
-                                       upper=2.0, lower=-1.0)
+                                       upper=2.0,
+                                       lower=-1.0)
     else:
         raise ValueError("Invalid solver name: {}".format(arguments.solver))
     start_time = time()
-    evolver.solve(max_hours_runtime=arguments.time, max_gens=fitness.function.get_maxfes() // arguments.popsize)
+    evolver.solve(max_hours_runtime=arguments.time, max_gens=gens)
     if isinstance(listener, VizListener):
         listener.save_gif()
     sub.call("echo That took a total of {} seconds".format(time() - start_time), shell=True)
