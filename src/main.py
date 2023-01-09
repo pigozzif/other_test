@@ -133,7 +133,7 @@ if __name__ == "__main__":
                                        range=get_bound(fitness.function), upper=2.0, lower=-1.0)
     elif arguments.solver == "kmeans":
         evolver = Solver.create_solver(name="kmeans", seed=seed, pop_size=arguments.popsize, num_dims=number_of_params,
-                                       num_modes=n_modes, genotype_factory="uniform_float",
+                                       num_modes=fitness.function.get_no_goptima(), genotype_factory="uniform_float",
                                        solution_mapper="direct",
                                        fitness_func=fitness,
                                        listener=listener, elite_ratio=0.5, clustering=arguments.clustering,
