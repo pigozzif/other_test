@@ -196,8 +196,8 @@ class EvolutionaryStrategy(EvolutionarySolver):
 class MultimodalStrategy(EvolutionarySolver):
 
     def __init__(self, seed, pop_size, genotype_factory, solution_mapper, clustering: str, elite_ratio: float,
-                 sigma: float, sigma_decay: float, sigma_limit: float, num_dims: int, l_rate_init: float,
-                 l_rate_decay: float, l_rate_limit: float, num_modes: int, fitness_func, listener, **kwargs):
+                 sigma: float, sigma_decay: float, sigma_limit: float, num_dims: int, num_modes: int, fitness_func,
+                 listener, **kwargs):
         super().__init__(seed=seed, pop_size=pop_size, genotype_factory=genotype_factory,
                          solution_mapper=solution_mapper, fitness_func=fitness_func, remap=False,
                          genetic_operators={}, listener=listener, comparator="lexicase", **kwargs)
@@ -206,11 +206,8 @@ class MultimodalStrategy(EvolutionarySolver):
         self.sigma_decay = sigma_decay
         self.sigma_limit = sigma_limit
         self.num_dims = num_dims
-        self.optimizers = [Adam(num_dims=num_dims, l_rate_init=l_rate_init, l_rate_decay=l_rate_decay,
-                                l_rate_limit=l_rate_limit) for _ in range(num_modes)]
         self.num_modes = num_modes
-        self.temp_best = None
-        self.best_fitness = float("inf")
+        self.best_fitness = float("-inf")
         self.mixture = GaussianMixture(n_components=self.num_modes, covariance_type="diag", max_iter=1)
         self.mixture.weights_ = np.full(shape=(self.num_modes,), fill_value=1 / self.num_modes)
         self.mixture.means_ = np.zeros(shape=(self.num_modes, self.num_dims))
@@ -222,18 +219,21 @@ class MultimodalStrategy(EvolutionarySolver):
             raise ValueError("Invalid clustering method: {}".format(self.clustering))
 
     def build_offspring(self) -> List[Individual]:
-        return self.mixture.sample(self.pop_size)[0]
+        return list(self.mixture.means_) + list(self.mixture.sample(self.pop_size - self.num_modes)[0])
 
     def update_modes(self) -> None:
         self.best_fitness = max([x.fitness["fitness_score"] for x in self.pop])
         if self.clustering == "kmeans":
-            self.mixture.means_ = self.optimizer.fit([ind.genotype for ind in sorted(self.pop, key=lambda x: x.fitness["fitness_score"])[:int(self.elite_ratio * self.pop_size)]]).cluster_centers_
+            self.mixture.means_ = self.optimizer.fit([ind.genotype for ind in sorted(self.pop, key=lambda x: x.fitness["fitness_score"], reverse=True)[:int(self.elite_ratio * self.pop_size)]]).cluster_centers_
         else:
-            self.mixture.fit([ind.genotype for ind in sorted(self.pop, key=lambda x: x.fitness["fitness_score"])[:int(self.elite_ratio * self.pop_size)]])
+            self.mixture.fit([ind.genotype for ind in sorted(self.pop, key=lambda x: x.fitness["fitness_score"], reverse=True)[:int(self.elite_ratio * self.pop_size)]])
             self.mixture.weights_ = np.full(shape=(self.num_modes,), fill_value=1 / self.num_modes)
             self.mixture.covariances_ = np.full(shape=(self.num_modes, self.num_dims), fill_value=self.sigma)
 
     def evolve(self) -> None:
+        if self.pop.gen == 1:
+            self.update_modes()
+            return
         self.pop.clear()
         for child in self.build_offspring():
             self.pop.add_individual(genotype=child)
