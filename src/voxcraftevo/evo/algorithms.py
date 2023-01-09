@@ -24,13 +24,11 @@ PLOT = True
 
 class Solver(object):
 
-    def __init__(self, seed: int, fitness_func: FitnessFunction, data_dir: str, hist_dir: str, pickle_dir: str,
-                 output_dir: str, executables_dir: str, logs_dir: str):
+    def __init__(self, seed: int, fitness_func: FitnessFunction):
         self.seed = seed
         self.fitness_func = fitness_func
         self.start_time = None
         self.best_so_far = None
-        self.data_dir = data_dir
 
     def elapsed_time(self, units: str = "s") -> float:
         if self.start_time is None:
@@ -44,7 +42,7 @@ class Solver(object):
             return s / 3600.0
 
     @abc.abstractmethod
-    def solve(self, max_hours_runtime: int, max_gens: int, checkpoint_every: int, save_hist_every: int):
+    def solve(self, max_hours_runtime: int, max_gens: int):
         pass
 
     @classmethod
@@ -63,9 +61,9 @@ class Solver(object):
 class EvolutionarySolver(Solver):
 
     def __init__(self, seed, pop_size: int, genotype_factory: str, solution_mapper: str, fitness_func, remap: bool,
-                 genetic_operators: Dict[str, float], data_dir, hist_dir, pickle_dir, output_dir, executables_dir,
-                 logs_dir, listener: Listener, comparator: str, genotype_filter: str = None, **kwargs):
-        super().__init__(seed, fitness_func, data_dir, hist_dir, pickle_dir, output_dir, executables_dir, logs_dir)
+                 genetic_operators: Dict[str, float], listener: Listener, comparator: str, genotype_filter: str = None,
+                 **kwargs):
+        super().__init__(seed, fitness_func=fitness_func)
         self.pop_size = pop_size
         self.remap = remap
         self.continued_from_checkpoint = False
@@ -88,16 +86,14 @@ class EvolutionarySolver(Solver):
             ind.fitness = self.fitness_func.get_fitness(individual=ind)
             ind.evaluated = True
 
-    def solve(self, max_hours_runtime, max_gens, checkpoint_every, save_hist_every) -> None:
+    def solve(self, max_hours_runtime, max_gens) -> None:
         self.start_time = time.time()
 
-        if not self.continued_from_checkpoint:  # generation zero
-            self.evaluate_individuals()
+        # generation zero
+        self.evaluate_individuals()
         self.best_so_far = self.get_best()
         # iterate until stop conditions met
         while self.pop.gen < max_gens and self.elapsed_time(units="h") <= max_hours_runtime:
-            sub.call("rm -rf {}/*".format(self.data_dir), shell=True)
-
             # update population stats
             self.pop.gen += 1
             self.pop.update_ages()
@@ -106,7 +102,6 @@ class EvolutionarySolver(Solver):
             self.listener.listen(solver=self)
             self.evolve()
         self.listener.listen(solver=self)
-        sub.call("echo Saving history of run champ at generation {0}".format(self.pop.gen + 1), shell=True)
 
     @abc.abstractmethod
     def evolve(self):
@@ -119,13 +114,10 @@ class EvolutionarySolver(Solver):
 class GeneticAlgorithm(EvolutionarySolver):
 
     def __init__(self, seed, pop_size, genotype_factory, solution_mapper, survival_selector: str, parent_selector: str,
-                 fitness_func, offspring_size: int, overlapping: bool, remap, genetic_operators, data_dir, hist_dir,
-                 pickle_dir, output_dir, executables_dir, logs_dir, listener, **kwargs):
+                 fitness_func, offspring_size: int, overlapping: bool, remap, genetic_operators, listener, **kwargs):
         super().__init__(seed=seed, pop_size=pop_size, genotype_factory=genotype_factory,
                          solution_mapper=solution_mapper, fitness_func=fitness_func, remap=remap,
-                         genetic_operators=genetic_operators, data_dir=data_dir, hist_dir=hist_dir,
-                         pickle_dir=pickle_dir, output_dir=output_dir, executables_dir=executables_dir,
-                         logs_dir=logs_dir, listener=listener, comparator="lexicase", **kwargs)
+                         genetic_operators=genetic_operators, listener=listener, comparator="lexicase", **kwargs)
         self.survival_selector = Selector.create_selector(name=survival_selector, **kwargs)
         self.parent_selector = Selector.create_selector(name=parent_selector, **kwargs)
         self.offspring_size = offspring_size
@@ -160,13 +152,10 @@ class EvolutionaryStrategy(EvolutionarySolver):
 
     def __init__(self, seed, pop_size, genotype_factory, solution_mapper, sigma: float, sigma_decay: float,
                  sigma_limit: float, num_dims: int, l_rate_init: float, l_rate_decay: float, l_rate_limit: float,
-                 fitness_func, data_dir, hist_dir, pickle_dir, output_dir, executables_dir, logs_dir, listener,
-                 **kwargs):
+                 fitness_func, listener, **kwargs):
         super().__init__(seed=seed, pop_size=pop_size, genotype_factory=genotype_factory,
                          solution_mapper=solution_mapper, fitness_func=fitness_func, remap=False,
-                         genetic_operators={}, data_dir=data_dir, hist_dir=hist_dir,
-                         pickle_dir=pickle_dir, output_dir=output_dir, executables_dir=executables_dir,
-                         logs_dir=logs_dir, listener=listener, comparator="lexicase", **kwargs)
+                         genetic_operators={}, listener=listener, comparator="lexicase", **kwargs)
         self.sigma = sigma
         self.sigma_decay = sigma_decay
         self.sigma_limit = sigma_limit
@@ -207,15 +196,12 @@ class EvolutionaryStrategy(EvolutionarySolver):
 
 class KMeansStrategy(EvolutionarySolver):
 
-    def __init__(self, seed, pop_size, genotype_factory, solution_mapper, clustering: str, elite_ratio: float, sigma: float, sigma_decay: float,
-                 sigma_limit: float, num_dims: int, l_rate_init: float, l_rate_decay: float, l_rate_limit: float,
-                 num_modes: int, fitness_func, data_dir, hist_dir, pickle_dir, output_dir, executables_dir, logs_dir,
-                 listener, **kwargs):
+    def __init__(self, seed, pop_size, genotype_factory, solution_mapper, clustering: str, elite_ratio: float,
+                 sigma: float, sigma_decay: float, sigma_limit: float, num_dims: int, l_rate_init: float,
+                 l_rate_decay: float, l_rate_limit: float, num_modes: int, fitness_func, listener, **kwargs):
         super().__init__(seed=seed, pop_size=pop_size, genotype_factory=genotype_factory,
                          solution_mapper=solution_mapper, fitness_func=fitness_func, remap=False,
-                         genetic_operators={}, data_dir=data_dir, hist_dir=hist_dir,
-                         pickle_dir=pickle_dir, output_dir=output_dir, executables_dir=executables_dir,
-                         logs_dir=logs_dir, listener=listener, comparator="lexicase", **kwargs)
+                         genetic_operators={}, listener=listener, comparator="lexicase", **kwargs)
         self.elite_ratio = elite_ratio
         self.sigma = sigma
         self.sigma_decay = sigma_decay
@@ -272,13 +258,10 @@ class KMeansStrategy(EvolutionarySolver):
 class NSGAII(EvolutionarySolver):
 
     def __init__(self, seed, pop_size, genotype_factory, solution_mapper, fitness_func, offspring_size: int, remap,
-                 genetic_operators, data_dir, hist_dir, pickle_dir, output_dir, executables_dir, logs_dir,
-                 listener, **kwargs):
+                 genetic_operators, listener, **kwargs):
         super().__init__(seed=seed, pop_size=pop_size, genotype_factory=genotype_factory,
                          solution_mapper=solution_mapper, fitness_func=fitness_func, remap=remap,
-                         genetic_operators=genetic_operators, data_dir=data_dir, hist_dir=hist_dir,
-                         pickle_dir=pickle_dir, output_dir=output_dir, executables_dir=executables_dir,
-                         logs_dir=logs_dir, listener=listener, comparator="pareto", **kwargs)
+                         genetic_operators=genetic_operators, listener=listener, comparator="pareto", **kwargs)
         self.offspring_size = offspring_size
         self.fronts = {}
         self.dominates = {}

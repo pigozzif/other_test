@@ -1,6 +1,6 @@
 import abc
 import random
-from typing import Tuple
+from typing import Tuple, List
 
 import numpy as np
 
@@ -27,16 +27,15 @@ class GenotypeFactory(object):
     @classmethod
     def create_factory(cls, name: str, genotype_filter: Filter, **kwargs):
         if name == "uniform_float":
-            return UniformFloatFactory(genotype_filter=genotype_filter, n=kwargs["n"], r=kwargs["range"])
+            return UniformFloatFactory(genotype_filter=genotype_filter, r=kwargs["range"])
         raise ValueError("Invalid genotype factory name: {}".format(name))
 
 
 class UniformFloatFactory(GenotypeFactory):
 
-    def __init__(self, genotype_filter, n: int, r: Tuple[float, float]):
+    def __init__(self, genotype_filter, r: List[Tuple[float, float]]):
         super().__init__(genotype_filter)
-        self.n = n
-        self.l, self.u = r
+        self.r = r
 
     def create(self) -> np.ndarray:
-        return np.array([random.random() * (self.u - self.l) + self.l for _ in range(self.n)])
+        return np.array([random.random() * (u - l) + l for u, l in self.r])

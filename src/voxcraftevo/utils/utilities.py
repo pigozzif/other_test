@@ -42,3 +42,8 @@ def exp_decay(param, param_decay, param_limit):
     """Exponentially decay parameter and clip by minimal value."""
     param = param * param_decay
     return max(param, param_limit)
+
+
+def get_bound(func):
+    """Get parameter bounds for a CEC2013 problem"""
+    return [(func.get_lbound(i), func.get_ubound(i)) for i in range(func.get_dimension())]
