@@ -21,7 +21,6 @@ def parse_args():
     parser = argparse.ArgumentParser(description="arguments")
     parser.add_argument("--seed", default=0, type=int, help="seed for random number generation")
     parser.add_argument("--solver", default="kmeans", type=str, help="solver for the optimization")
-    parser.add_argument("--gens", default=40, type=int, help="generations for the ea")
     parser.add_argument("--popsize", default=100, type=int, help="population size for the ea")
     parser.add_argument("--time", default=48, type=int, help="maximum hours for the ea")
     parser.add_argument("--output_dir", default="output", type=str,
@@ -38,40 +37,38 @@ def parse_args():
 
 class MyListener(Listener):
 
-    def __init__(self, file_path: str, header: Iterable[str], targets: Iterable[float]):
+    def __init__(self, file_path: str, header: Iterable[str]):
         super().__init__(file_path, header)
-        self.targets = targets
+        self.accuracy = 0.001
 
     def listen(self, solver):
+        count, _ = how_many_goptima(np.array([ind.genotype for ind in solver.pop]), solver.fitness_func.function,
+                                    self.accuracy)
         with open(self._file, "a") as file:
             file.write(self._delimiter.join([str(solver.pop.gen), str(solver.elapsed_time()),
                                              str(solver.get_best_fitness()),
-                                             str(solver.get_average_distance(self.targets)),
-                                             "/".join([str(solver.get_best_distance(target))
-                                                       for target in self.targets])]
-                                            ) + "\n")
+                                             str(len(count) // solver.fitness_func.function.get_no_goptima())]))
 
 
 class VizListener(Listener):
 
-    def __init__(self, file_path: str, header: Iterable[str], targets: Iterable[float]):
+    def __init__(self, file_path: str, header: Iterable[str]):
         super().__init__(file_path, header)
-        self._inner_listener = MyListener(file_path=file_path, header=header, targets=targets)
+        self._inner_listener = MyListener(file_path=file_path, header=header)
         self.images = []
         os.system("rm -rf frames")
         os.makedirs("frames")
 
     def listen(self, solver) -> None:
+        if solver.fitness_func.function.get_dimension() != 2:
+            raise ValueError("Visualizing a non-bidimensional function")
         self._inner_listener.listen(solver=solver)
-        r_min, r_max = -6.0, 6.0
-        x_axis = np.arange(r_min, r_max, 0.05)
-        y_axis = np.arange(r_min, r_max, 0.05)
+        x_axis = np.arange(solver.get_lbound()[0], solver.get_ubound()[0], 0.05)
+        y_axis = np.arange(solver.get_lbound()[1], solver.get_ubound()[1], 0.05)
         x, y = np.meshgrid(x_axis, y_axis)
-        results = np.array([[solver.fitness_func.evaluate(np.array([x[i, j], y[i, j]])) for i in range(len(x_axis))]
+        results = np.array([[solver.fitness_func.evaluate(x=np.array([x[i, j], y[i, j]])) for i in range(len(x_axis))]
                             for j in range(len(y_axis))])
         plt.pcolormesh(x_axis, y_axis, results, cmap="plasma")
-        plt.scatter(2.0, 2.0, marker="o", color="white")
-        plt.scatter(-2.0, -2.0, marker="o", color="white")
         plt.scatter([ind.genotype[0] for ind in solver.pop], [ind.genotype[1] for ind in solver.pop], marker="x",
                     color="red")
         image = "frames/{}.png".format(solver.pop.gen)
@@ -113,13 +110,11 @@ if __name__ == "__main__":
     if arguments.visualize == 1:
         listener = VizListener(file_path=".".join([str(arguments.clustering), str(seed), str(arguments.num_clusters),
                                                    str(arguments.num_dims), str(arguments.num_targets), "txt"]),
-                               header=["iteration", "elapsed.time", "best.fitness", "avg.distance", "distances"],
-                               targets=targets)
+                               header=["iteration", "elapsed.time", "best.fitness", "avg.distance", "distances"])
     else:
         listener = MyListener(file_path=".".join([str(arguments.clustering), str(seed), str(arguments.num_clusters),
                                                   str(arguments.num_dims), str(arguments.num_targets), "txt"]),
-                              header=["iteration", "elapsed.time", "best.fitness", "avg.distance", "distances"],
-                              targets=targets)
+                              header=["iteration", "elapsed.time", "best.fitness", "avg.distance", "distances"])
     fitness = MyFitness(function=CEC2013(arguments.problem))
     number_of_params = fitness.function.get_dimension()
     if arguments.solver == "es":
@@ -144,7 +139,7 @@ if __name__ == "__main__":
     else:
         raise ValueError("Invalid solver name: {}".format(arguments.solver))
     start_time = time()
-    evolver.solve(max_hours_runtime=arguments.time, max_gens=arguments.gens)
+    evolver.solve(max_hours_runtime=arguments.time, max_gens=fitness.function.get_maxfes() // arguments.popsize)
     if isinstance(listener, VizListener):
         listener.save_gif()
     sub.call("echo That took a total of {} seconds".format(time() - start_time), shell=True)
