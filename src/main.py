@@ -137,7 +137,7 @@ if __name__ == "__main__":
                                        range=get_bound(fitness.function),
                                        upper=2.0,
                                        lower=-1.0)
-    elif arguments.solver == "kmeans" or arguments.solver == "em":
+    elif arguments.solver == "kmeans" or arguments.solver.startswith("em"):
         evolver = Solver.create_solver(name="multimodal",
                                        seed=seed,
                                        pop_size=arguments.popsize,
