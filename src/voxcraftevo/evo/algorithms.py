@@ -215,7 +215,7 @@ class MultimodalStrategy(EvolutionarySolver):
         self.clustering = clustering
         if self.clustering == "kmeans":
             self.optimizer = KMeans(n_clusters=self.num_modes, random_state=seed)
-        elif self.clustering != "em":
+        elif not self.clustering.startswith("em"):
             raise ValueError("Invalid clustering method: {}".format(self.clustering))
 
     def build_offspring(self) -> List[Individual]:
@@ -226,9 +226,12 @@ class MultimodalStrategy(EvolutionarySolver):
         if self.clustering == "kmeans":
             self.mixture.means_ = self.optimizer.fit([ind.genotype for ind in sorted(self.pop, key=lambda x: x.fitness["fitness_score"], reverse=True)[:int(self.elite_ratio * self.pop_size)]]).cluster_centers_
         else:
-            self.mixture.fit([ind.genotype for ind in sorted(self.pop, key=lambda x: x.fitness["fitness_score"], reverse=True)[:int(self.elite_ratio * self.pop_size)]])
-            self.mixture.weights_ = np.full(shape=(self.num_modes,), fill_value=1 / self.num_modes)
-            self.mixture.covariances_ = np.full(shape=(self.num_modes, self.num_dims), fill_value=self.sigma)
+            self.mixture.fit([ind.genotype for ind in sorted(self.pop, key=lambda x: x.fitness["fitness_score"],
+                                                             reverse=True)[:int(self.elite_ratio * self.pop_size)]])
+            if "p-" not in self.clustering:
+                self.mixture.weights_ = np.full(shape=(self.num_modes,), fill_value=1 / self.num_modes)
+            if "s-" not in self.clustering:
+                self.mixture.covariances_ = np.full(shape=(self.num_modes, self.num_dims), fill_value=self.sigma)
 
     def evolve(self) -> None:
         if self.pop.gen == 1:
