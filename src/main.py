@@ -118,11 +118,12 @@ if __name__ == "__main__":
     # for i in range(fitness.function.get_dimension()):
     #     print(fitness.function.get_lbound(i), fitness.function.get_ubound(i))
     number_of_params = fitness.function.get_dimension()
-    gens = fitness.function.get_maxfes() // arguments.popsize
+    pop_size = arguments.popsize if (arguments.problem != 8 and arguments.problem != 9) else arguments.popsize * 5
+    gens = fitness.function.get_maxfes() // pop_size
     if arguments.solver == "es":
         evolver = Solver.create_solver(name="es",
                                        seed=seed,
-                                       pop_size=arguments.popsize,
+                                       pop_size=pop_size,
                                        num_dims=number_of_params,
                                        genotype_factory="uniform_float",
                                        solution_mapper="direct",
@@ -140,7 +141,7 @@ if __name__ == "__main__":
     elif arguments.solver == "kmeans" or arguments.solver.startswith("em"):
         evolver = Solver.create_solver(name="multimodal",
                                        seed=seed,
-                                       pop_size=arguments.popsize,
+                                       pop_size=pop_size,
                                        num_dims=number_of_params,
                                        num_modes=fitness.function.get_no_goptima(),
                                        genotype_factory="uniform_float",

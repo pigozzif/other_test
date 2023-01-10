@@ -4,6 +4,8 @@
 # Developers: Michael G. Epitropakis
 #      email: m_(DOT)_epitropakis_(AT)_lancaster_(DOT)_ac_(DOT)_uk 
 ###############################################################################
+import os
+
 from .cfunction import *
 import numpy as np
 
@@ -23,7 +25,7 @@ class CF3(CFunction):
         self._CFunction__ubound_ = 5.0 * np.ones(dim)
 
         # Load optima
-        o = np.loadtxt('data/optima.dat')
+        o = np.loadtxt(os.path.join(os.getcwd(), "src/data/optima.dat"))
         if o.shape[1] >= dim:
             self._CFunction__O_ = o[:self._CFunction__nofunc_, :dim]
         else:  # randomly initialize
@@ -33,7 +35,7 @@ class CF3(CFunction):
 
         # Load M_: Rotation matrices
         if dim == 2 or dim == 3 or dim == 5 or dim == 10 or dim == 20:
-            fname = "data/CF3_M_D" + str(dim) + ".dat"
+            fname = "src/data/CF3_M_D" + str(dim) + ".dat"
             self._CFunction__load_rotmat(fname)
         else:
             # M_ Identity matrices # TODO: Generate dimension independent rotation matrices

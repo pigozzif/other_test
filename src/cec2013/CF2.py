@@ -4,6 +4,8 @@
 # Developers: Michael G. Epitropakis
 #      email: m_(DOT)_epitropakis_(AT)_lancaster_(DOT)_ac_(DOT)_uk 
 ###############################################################################
+import os
+
 from .cfunction import *
 import numpy as np
 
@@ -23,7 +25,7 @@ class CF2(CFunction):
         self._CFunction__ubound_ = 5.0 * np.ones(dim)
 
         # Load optima
-        o = np.loadtxt('data/optima.dat')
+        o = np.loadtxt(os.path.join(os.getcwd(), "src/data/optima.dat"))
         if o.shape[1] >= dim:
             self._CFunction__O_ = o[:self._CFunction__nofunc_, :dim]
         else:  # randomly initialize
