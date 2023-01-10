@@ -108,10 +108,10 @@ if __name__ == "__main__":
     set_seed(arguments.seed)
     seed = arguments.seed
     if arguments.visualize == 1:
-        listener = VizListener(file_path=".".join([str(arguments.solver), str(seed), str(arguments.problem), "txt"]),
+        listener = VizListener(file_path=".".join([str(arguments.clustering), str(seed), str(arguments.problem), "txt"]),
                                header=["iteration", "elapsed.time", "best.fitness", "avg.distance"])
     else:
-        listener = MyListener(file_path=".".join([str(arguments.solver), str(seed), str(arguments.problem), "txt"]),
+        listener = MyListener(file_path=".".join([str(arguments.clustering), str(seed), str(arguments.problem), "txt"]),
                               header=["iteration", "elapsed.time", "best.fitness", "avg.distance"])
     fitness = MyFitness(function=CEC2013(arguments.problem))
     # print(fitness.function.get_info())
