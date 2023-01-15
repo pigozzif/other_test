@@ -1,4 +1,3 @@
-import os
 from time import time
 import subprocess as sub
 import argparse
@@ -7,6 +6,8 @@ from typing import Iterable
 import numpy as np
 import matplotlib.pyplot as plt
 import imageio
+from scipy.stats import multivariate_normal
+from scipy.optimize import differential_evolution
 
 from cec2013.cec2013 import *
 
@@ -22,12 +23,12 @@ def parse_args():
     parser.add_argument("--seed", default=0, type=int, help="seed for random number generation")
     parser.add_argument("--solver", default="kmeans", type=str, help="solver for the optimization")
     parser.add_argument("--popsize", default=100, type=int, help="population size for the ea")
-    parser.add_argument("--time", default=48, type=int, help="maximum hours for the ea")
+    parser.add_argument("--elite", default=0.5, type=float, help="elite ratio for the ea")
     parser.add_argument("--output_dir", default="output", type=str,
                         help="relative path to output dir")
     parser.add_argument("--fitness", default="fitness_score", type=str, help="fitness tag")
     parser.add_argument("--clustering", default=None, type=str, help="clustering algorithm")
-    parser.add_argument("--problem", default=None, type=int, help="CEC2013 problem to test")
+    parser.add_argument("--problem", default=None, type=str, help="CEC2013 problem to test")
     parser.add_argument("--visualize", default=0, type=int, help="visualize evolution")
     return parser.parse_args()
 
@@ -36,15 +37,22 @@ class MyListener(Listener):
 
     def __init__(self, file_path: str, header: Iterable[str]):
         super().__init__(file_path, header)
-        self.accuracy = 0.001
+        self.accuracies = [0.01, 0.001, 0.0001, 0.00001, 0.000001]
 
     def listen(self, solver):
-        count, _ = how_many_goptima(np.array([ind.genotype for ind in solver.pop]), solver.fitness_func.function,
-                                    self.accuracy)
         with open(self._file, "a") as file:
             file.write(self._delimiter.join([str(solver.pop.gen), str(solver.elapsed_time()),
-                                             str(solver.get_best_fitness()),
-                                             str(count / solver.fitness_func.function.get_no_goptima())]) + "\n")
+                                             str(solver.get_best_fitness())] +
+                                            [str(self._get_recall(solver, accuracy=acc)) for acc in self.accuracies])
+                       + "\n")
+
+    def _get_recall(self, solver, accuracy):
+        pop = np.array([ind.genotype for ind in solver.pop])
+        if isinstance(solver.fitness_func.function, SoG):
+            count = solver.fitness_func.function.how_many_goptima(pop, accuracy)
+        else:
+            count, _ = how_many_goptima(pop, solver.fitness_func.function, accuracy)
+        return count / solver.fitness_func.function.get_no_goptima()
 
 
 class VizListener(Listener):
@@ -103,22 +111,89 @@ class MyFitness(FitnessFunction):
         return {"fitness_score": fit if fit is not None else float("-inf")}
 
 
+class SoG(object):
+
+    def __init__(self, d, n):
+        self.d = d
+        self.n = n
+        delta = abs(self.get_ubound(0) - self.get_lbound(0)) / self.n
+        self.means = self._sample_means(delta=delta)
+        self.h = np.zeros((self.n, self.d))
+        alpha = delta / self.d
+        smallest_idx, smallest_bandwidth = self._fill_h(alpha=alpha)
+        self.root = differential_evolution(self.evaluate, bounds=[(self.means[smallest_idx, i] - smallest_bandwidth,
+                                                                   self.means[smallest_idx, i] + smallest_bandwidth)
+                                                                  for i in range(self.d)])
+
+    def _sample_means(self, delta):
+        means = np.zeros((self.n, self.d))
+        for i in range(self.n):
+            sample = np.random.uniform(low=self.get_lbound(0), high=self.get_ubound(0), size=(1, self.d))
+            while any([np.linalg.norm(sample - m) < delta for m in means]):
+                sample = np.random.uniform(low=self.get_lbound(0), high=self.get_ubound(0), size=(1, self.d))
+            means[i] = sample
+        return means
+
+    def _fill_h(self, alpha):
+        smallest_idx = -1
+        smallest_bandwidth = float("inf")
+        for i, m in enumerate(self.means):
+            bandwidth = alpha * np.min([np.linalg.norm(other_m - m) for j, other_m in enumerate(self.means) if i != j])
+            self.h[i] = np.full(shape=(self.d,), fill_value=bandwidth)
+            smallest_idx = i if bandwidth < smallest_bandwidth else smallest_idx
+            smallest_bandwidth = min(bandwidth, smallest_bandwidth)
+        return smallest_idx, smallest_bandwidth
+
+    def get_dimension(self):
+        return self.d
+
+    def get_lbound(self, i):
+        return -1.0
+
+    def get_ubound(self, i):
+        return 1.0
+
+    def evaluate(self, x):
+        return np.sum([multivariate_normal.pdf(x, mean=self.means[i], cov=self.h[i]) for i in range(self.n)])
+
+    def get_fitness_goptima(self):
+        return self.root
+
+    def get_no_goptima(self):
+        return self.n
+
+    def get_maxfes(self):
+        return self.d * 100000
+
+    def how_many_goptima(self, pop, accuracy):
+        count = 0
+        for ind in pop:
+            for m in self.means:
+                if np.linalg.norm(ind - m) < accuracy:
+                    count += 1
+                    break
+        return count
+
+
 if __name__ == "__main__":
     arguments = parse_args()
     set_seed(arguments.seed)
     seed = arguments.seed
     if arguments.visualize == 1:
-        listener = VizListener(file_path=".".join([str(arguments.clustering), str(seed), str(arguments.problem), "txt"]),
-                               header=["iteration", "elapsed.time", "best.fitness", "avg.distance"])
+        listener = VizListener(file_path=".".join([str(arguments.clustering), str(seed), str(arguments.popsize),
+                                                   str(arguments.elite), arguments.problem, "txt"]),
+                               header=["iteration", "elapsed.time", "best.fitness"] +
+                                      ["pr-{}".format(acc) for acc in [0.01, 0.001, 0.0001, 0.00001, 0.000001]])
     else:
-        listener = MyListener(file_path=".".join([str(arguments.clustering), str(seed), str(arguments.problem), "txt"]),
-                              header=["iteration", "elapsed.time", "best.fitness", "avg.distance"])
-    fitness = MyFitness(function=CEC2013(arguments.problem))
-    # print(fitness.function.get_info())
-    # for i in range(fitness.function.get_dimension()):
-    #     print(fitness.function.get_lbound(i), fitness.function.get_ubound(i))
+        listener = MyListener(file_path=".".join([str(arguments.clustering), str(seed), str(arguments.popsize),
+                                                  str(arguments.elite), arguments.problem, "txt"]),
+                              header=["iteration", "elapsed.time", "best.fitness"] +
+                                     ["pr-{}".format(acc) for acc in [0.01, 0.001, 0.0001, 0.00001, 0.000001]])
+    pid = int(arguments.problem.split("-")[0])
+    fitness = MyFitness(function=CEC2013(pid) if pid != 0 else SoG(int(arguments.problem.split("-")[1]),
+                                                                   int(arguments.problem.split("-")[2])))
     number_of_params = fitness.function.get_dimension()
-    pop_size = arguments.popsize if (arguments.problem != 8 and arguments.problem != 9) else arguments.popsize * 5
+    pop_size = arguments.popsize
     gens = fitness.function.get_maxfes() // pop_size
     if arguments.solver == "es":
         evolver = Solver.create_solver(name="es",
@@ -161,7 +236,7 @@ if __name__ == "__main__":
     else:
         raise ValueError("Invalid solver name: {}".format(arguments.solver))
     start_time = time()
-    evolver.solve(max_hours_runtime=arguments.time, max_gens=gens)
+    evolver.solve(max_gens=100)  # gens)
     if isinstance(listener, VizListener):
         listener.save_gif()
     sub.call("echo That took a total of {} seconds".format(time() - start_time), shell=True)

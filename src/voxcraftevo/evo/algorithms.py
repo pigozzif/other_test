@@ -4,7 +4,6 @@ from typing import Dict, List
 
 import numpy as np
 import matplotlib.pyplot as plt
-import subprocess as sub
 from sklearn.cluster import KMeans
 from sklearn.mixture import GaussianMixture
 
@@ -42,7 +41,7 @@ class Solver(object):
             return s / 3600.0
 
     @abc.abstractmethod
-    def solve(self, max_hours_runtime: int, max_gens: int):
+    def solve(self, max_gens: int):
         pass
 
     @classmethod
@@ -86,13 +85,13 @@ class EvolutionarySolver(Solver):
             ind.fitness = self.fitness_func.get_fitness(individual=ind)
             ind.evaluated = True
 
-    def solve(self, max_hours_runtime, max_gens) -> None:
+    def solve(self, max_gens) -> None:
         self.start_time = time.time()
         # generation zero
         self.evaluate_individuals()
         self.best_so_far = self.get_best()
         # iterate until stop conditions met
-        while self.pop.gen < max_gens and self.elapsed_time(units="h") <= max_hours_runtime:
+        while self.pop.gen < max_gens:
             # update population stats
             self.pop.gen += 1
             self.pop.update_ages()
@@ -209,32 +208,45 @@ class MultimodalStrategy(EvolutionarySolver):
         self.num_modes = num_modes
         self.best_fitness = float("-inf")
         self.mixture = GaussianMixture(n_components=self.num_modes, covariance_type="diag", max_iter=1)
-        self.mixture.weights_ = np.full(shape=(self.num_modes,), fill_value=1 / self.num_modes)
-        self.mixture.means_ = np.zeros(shape=(self.num_modes, self.num_dims))
-        self.mixture.covariances_ = np.full(shape=(self.num_modes, self.num_dims), fill_value=self.sigma)
         self.clustering = clustering
         if self.clustering == "kmeans":
             self.optimizer = KMeans(n_clusters=self.num_modes, random_state=seed)
         elif not self.clustering.startswith("em"):
             raise ValueError("Invalid clustering method: {}".format(self.clustering))
 
+    def _init_mixture(self):
+        self.mixture.fit(np.zeros((self.pop_size, self.num_dims)))
+        self.mixture.weights_ = np.full(shape=(self.num_modes,), fill_value=1 / self.num_modes)
+        self.mixture.means_ = np.zeros(shape=(self.num_modes, self.num_dims))
+        self.mixture.covariances_ = np.full(shape=(self.num_modes, self.num_dims), fill_value=self.sigma)
+
     def build_offspring(self) -> List[Individual]:
         return list(self.mixture.means_) + list(self.mixture.sample(self.pop_size - self.num_modes)[0])
 
     def update_modes(self) -> None:
         self.best_fitness = max([x.fitness["fitness_score"] for x in self.pop])
+        elite = self.trim_population()
         if self.clustering == "kmeans":
-            self.mixture.means_ = self.optimizer.fit([ind.genotype for ind in sorted(self.pop, key=lambda x: x.fitness["fitness_score"], reverse=True)[:int(self.elite_ratio * self.pop_size)]]).cluster_centers_
+            self.mixture.means_ = self.optimizer.fit([ind.genotype for ind in elite]).cluster_centers_
         else:
-            self.mixture.fit([ind.genotype for ind in sorted(self.pop, key=lambda x: x.fitness["fitness_score"],
-                                                             reverse=True)[:int(self.elite_ratio * self.pop_size)]])
+            self.mixture.fit([ind.genotype for ind in elite])
             if "p-" not in self.clustering:
                 self.mixture.weights_ = np.full(shape=(self.num_modes,), fill_value=1 / self.num_modes)
             if "s-" not in self.clustering:
                 self.mixture.covariances_ = np.full(shape=(self.num_modes, self.num_dims), fill_value=self.sigma)
 
+    def trim_population(self):
+        survivors = []
+        labels = self.mixture.predict(np.array([ind.genotype for ind in self.pop]))
+        for i in np.unique(labels):
+            species = [ind for ind, label in zip(self.pop, labels) if label == i]
+            survivors.extend([ind for ind in sorted(species, key=lambda x: x.fitness["fitness_score"],
+                                                    reverse=True)[:int(self.elite_ratio * len(species))]])
+        return survivors
+
     def evolve(self) -> None:
         if self.pop.gen == 1:
+            self._init_mixture()
             self.update_modes()
             return
         self.pop.clear()
