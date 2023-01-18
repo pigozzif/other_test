@@ -49,7 +49,10 @@ import jax
 import jax.numpy as jnp
 import chex
 from typing import Tuple, Optional, Union
-from evosax.strategy import Strategy
+try:
+    from evosax.strategy import Strategy
+except:
+    pass
 from evosax.utils import GradientOptimizer, OptState, OptParams, exp_decay
 from flax import struct
 
