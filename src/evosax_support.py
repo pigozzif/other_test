@@ -4,7 +4,33 @@ import chex
 from typing import Tuple, Optional, Union, Dict
 from flax import struct
 from functools import partial
-from evosax.utils import get_best_fitness_member, ParameterReshaper, FitnessShaper
+from jax import vjp, flatten_util
+from jax.tree_util import tree_flatten
+
+
+def get_best_fitness_member(
+    x: chex.Array, fitness: chex.Array, state, maximize: bool = False
+) -> Tuple[chex.Array, float]:
+    """Check if fitness improved & replace in ES state."""
+    fitness_min = jax.lax.select(maximize, -1 * fitness, fitness)
+    max_and_later = maximize and state.gen_counter > 0
+    best_fit_min = jax.lax.select(
+        max_and_later, -1 * state.best_fitness, state.best_fitness
+    )
+    best_in_gen = jnp.argmin(fitness_min)
+    best_in_gen_fitness, best_in_gen_member = (
+        fitness_min[best_in_gen],
+        x[best_in_gen],
+    )
+    replace_best = best_in_gen_fitness < best_fit_min
+    best_fitness = jax.lax.select(
+        replace_best, best_in_gen_fitness, best_fit_min
+    )
+    best_member = jax.lax.select(
+        replace_best, best_in_gen_member, state.best_member
+    )
+    best_fitness = jax.lax.select(maximize, -1 * best_fitness, best_fitness)
+    return best_member, best_fitness
 
 
 @struct.dataclass
@@ -316,3 +342,184 @@ GradientOptimizer = {
     "sgd": SGD,
     "adam": Adam
 }
+
+
+class FitnessShaper(object):
+    def __init__(
+        self,
+        centered_rank: Union[bool, int] = False,
+        z_score: Union[bool, int] = False,
+        norm_range: Union[bool, int] = False,
+        w_decay: float = 0.0,
+        maximize: Union[bool, int] = False,
+    ):
+        """JAX-compatible fitness shaping tool."""
+        self.w_decay = w_decay
+        self.centered_rank = bool(centered_rank)
+        self.z_score = bool(z_score)
+        self.norm_range = bool(norm_range)
+        self.maximize = bool(maximize)
+
+        # Check that only single fitness shaping transformation is used
+        num_options_on = self.centered_rank + self.z_score + self.norm_range
+        assert (
+            num_options_on < 2
+        ), "Only use one fitness shaping transformation."
+
+    @partial(jax.jit, static_argnums=(0,))
+    def apply(self, x: chex.Array, fitness: chex.Array) -> chex.Array:
+        """Max objective trafo, rank shaping, z scoring & add weight decay."""
+        if self.maximize:
+            fitness = -1 * fitness
+
+        # Apply wdecay before normalization - makes easier to tune
+        # "Reduce" fitness based on L2 norm of parameters
+        if self.w_decay > 0.0:
+            l2_fit_red = self.w_decay * compute_l2_norm(x)
+            fitness += l2_fit_red
+
+        if self.centered_rank:
+            fitness = centered_rank_trafo(fitness)
+
+        if self.z_score:
+            fitness = z_score_trafo(fitness)
+
+        if self.norm_range:
+            fitness = range_norm_trafo(fitness, -1.0, 1.0)
+
+        return fitness
+
+
+def z_score_trafo(arr: chex.Array) -> chex.Array:
+    """Make fitness 'Gaussian' by substracting mean and dividing by std."""
+    return (arr - jnp.mean(arr)) / (jnp.std(arr) + 1e-10)
+
+
+def compute_ranks(fitness: chex.Array) -> chex.Array:
+    """Return fitness ranks in [0, len(fitness))."""
+    ranks = jnp.zeros(len(fitness))
+    ranks = ranks.at[fitness.argsort()].set(jnp.arange(len(fitness)))
+    return ranks
+
+
+def centered_rank_trafo(fitness: chex.Array) -> chex.Array:
+    """Return ~ -0.5 to 0.5 centered ranks (best to worst - min!)."""
+    y = compute_ranks(fitness)
+    y /= fitness.size - 1
+    return y - 0.5
+
+
+def compute_l2_norm(x: chex.Array) -> chex.Array:
+    """Compute L2-norm of x_i. Assumes x to have shape (popsize, num_dims)."""
+    return jnp.mean(x * x, axis=1)
+
+
+def range_norm_trafo(
+    arr: chex.Array, min_val: float = -1.0, max_val: float = 1.0
+) -> chex.Array:
+    """Map scores into a min/max range."""
+    arr = jnp.clip(arr, -1e10, 1e10)
+    normalized_arr = (
+        2
+        * max_val
+        * (arr - jnp.nanmin(arr))
+        / (jnp.nanmax(arr) - jnp.nanmin(arr) + 1e-10)
+        - min_val
+    )
+    return normalized_arr
+
+
+def ravel_pytree(pytree):
+    leaves, _ = tree_flatten(pytree)
+    flat, _ = vjp(ravel_list, *leaves)
+    return flat
+
+
+def ravel_list(*lst):
+    return (
+        jnp.concatenate([jnp.ravel(elt) for elt in lst])
+        if lst
+        else jnp.array([])
+    )
+
+
+class ParameterReshaper(object):
+    def __init__(
+        self,
+        placeholder_params: Union[chex.ArrayTree, chex.Array],
+        n_devices: Optional[int] = None,
+        verbose: bool = True,
+    ):
+        """Reshape flat parameters vectors into generation eval shape."""
+        # Get network shape to reshape
+        self.placeholder_params = placeholder_params
+
+        # Set total parameters depending on type of placeholder params
+        flat, self.unravel_pytree = flatten_util.ravel_pytree(
+            placeholder_params
+        )
+        self.total_params = flat.shape[0]
+        self.reshape_single = jax.jit(self.unravel_pytree)
+
+        if n_devices is None:
+            self.n_devices = jax.local_device_count()
+        else:
+            self.n_devices = n_devices
+        if self.n_devices > 1 and verbose:
+            print(
+                f"ParameterReshaper: {self.n_devices} devices detected. Please"
+                " make sure that the ES population size divides evenly across"
+                " the number of devices to pmap/parallelize over."
+            )
+
+        if verbose:
+            print(
+                f"ParameterReshaper: {self.total_params} parameters detected"
+                " for optimization."
+            )
+
+    def reshape(self, x: chex.Array) -> chex.ArrayTree:
+        """Perform reshaping for a 2D matrix (pop_members, params)."""
+        vmap_shape = jax.vmap(self.reshape_single)
+        if self.n_devices > 1:
+            x = self.split_params_for_pmap(x)
+            map_shape = jax.pmap(vmap_shape)
+        else:
+            map_shape = vmap_shape
+        return map_shape(x)
+
+    def multi_reshape(self, x: chex.Array) -> chex.ArrayTree:
+        """Reshape parameters lying already on different devices."""
+        # No reshaping required!
+        vmap_shape = jax.vmap(self.reshape_single)
+        return jax.pmap(vmap_shape)(x)
+
+    def flatten(self, x: chex.ArrayTree) -> chex.Array:
+        """Reshaping pytree parameters into flat array."""
+        vmap_flat = jax.vmap(ravel_pytree)
+        if self.n_devices > 1:
+            # Flattening of pmap paramater trees to apply vmap flattening
+            def map_flat(x):
+                x_re = jax.tree_map(lambda x: x.reshape(-1, *x.shape[2:]), x)
+                return vmap_flat(x_re)
+
+        else:
+            map_flat = vmap_flat
+        flat = map_flat(x)
+        return flat
+
+    def multi_flatten(self, x: chex.Array) -> chex.ArrayTree:
+        """Flatten parameters lying remaining on different devices."""
+        # No reshaping required!
+        vmap_flat = jax.vmap(ravel_pytree)
+        return jax.pmap(vmap_flat)(x)
+
+    def split_params_for_pmap(self, param: chex.Array) -> chex.Array:
+        """Helper reshapes param (bs, #params) into (#dev, bs/#dev, #params)."""
+        return jnp.stack(jnp.split(param, self.n_devices))
+
+    @property
+    def vmap_dict(self) -> chex.ArrayTree:
+        """Get a dictionary specifying axes to vmap over."""
+        vmap_dict = jax.tree_map(lambda x: 0, self.placeholder_params)
+        return vmap_dict
