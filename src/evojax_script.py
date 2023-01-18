@@ -51,7 +51,7 @@ import chex
 from typing import Tuple, Optional, Union
 from flax import struct
 
-from evosax_support import GradientOptimizer, Strategy, OptParams, OptState, exp_decay
+from evosax_support import GradientOptimizer, Strategy, OptParams, OptState, exp_decay, FitnessShaper
 
 
 def parse_args():
@@ -243,13 +243,6 @@ class MyES(NEAlgorithm):
             print("  please consider upgrading your Python version.")
             sys.exit(1)
 
-        try:
-            import evosax
-        except ModuleNotFoundError:
-            print("You need to install evosax for its OpenES implementation:")
-            print("  pip install evosax")
-            sys.exit(1)
-
         if logger is None:
             self.logger = create_logger(name="MyES")
         else:
@@ -282,7 +275,7 @@ class MyES(NEAlgorithm):
 
         # By default evojax assumes maximization of fitness score!
         # Evosax, on the other hand, minimizes!
-        self.fit_shaper = evosax.FitnessShaper(
+        self.fit_shaper = FitnessShaper(
             centered_rank=True, z_score=False, w_decay=w_decay, maximize=True
         )
 
