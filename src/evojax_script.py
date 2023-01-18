@@ -51,7 +51,7 @@ import chex
 from typing import Tuple, Optional, Union, Dict
 from flax import struct
 from functools import partial
-from .utils import get_best_fitness_member, ParameterReshaper, FitnessShaper
+from evosax.utils import get_best_fitness_member, ParameterReshaper, FitnessShaper
 
 
 def parse_args():
