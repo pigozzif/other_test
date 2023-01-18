@@ -456,7 +456,7 @@ def train(sim_mgr, file_name, solver, max_iters, num_tests, test_interval):
 
 
 def main(config):
-    logs_dir = "./drive/My Drive/test/output/{}/".format(config.task)
+    logs_dir = "./output/{}/".format(config.task)
     if not os.path.isdir(logs_dir):
         os.makedirs(logs_dir)
 
