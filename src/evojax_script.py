@@ -36,14 +36,9 @@ import logging
 import numpy as np
 
 from evojax.algo import ARS
-from evojax.algo import CMA_ES
-from evojax.algo import PGPE
 from evojax.policy import MLPPolicy
-from evojax.policy.convnet import ConvNetPolicy
 from evojax.task.brax_task import BraxTask
 from evojax.task.cartpole import CartPoleSwingUp
-from evojax.task.mnist import MNIST
-from evojax.task.slimevolley import SlimeVolley
 from evojax.algo.base import NEAlgorithm
 from evojax.util import create_logger
 
@@ -331,25 +326,7 @@ class FileListener(object):
 
 
 def create_solver(config, num_params):
-    if config.solver == "cmaes":
-        return CMA_ES(
-            pop_size=100,
-            param_size=num_params,
-            elite_ratio=0.5,
-            init_stdev=0.15,
-            seed=config.seed
-        )
-    elif config.solver == "pgpe":
-        return PGPE(
-            pop_size=64,
-            param_size=num_params,
-            center_learning_rate=0.05,
-            stdev_learning_rate=0.1,
-            init_stdev=0.1,
-            optimizer="adam",
-            seed=config.seed
-        )
-    elif config.solver == "ars":
+    if config.solver == "ars":
         return ARS(
             param_size=num_params,
             pop_size=1024,
@@ -399,15 +376,6 @@ def create_task(task_name):
     if task_name.startswith("cartpole_"):
         train_task = CartPoleSwingUp(test=False, harder="hard" in task_name)
         test_task = CartPoleSwingUp(test=True, harder="easy" not in task_name)
-        max_iter = 300
-    elif task_name == "slime_volley":
-        max_steps = 3000
-        train_task = SlimeVolley(test=False, max_steps=max_steps)
-        test_task = SlimeVolley(test=True, max_steps=max_steps)
-        max_iter = 300
-    elif task_name == "mnist":
-        train_task = MNIST(batch_size=128, test=False)
-        test_task = MNIST(batch_size=128, test=True)
         max_iter = 300
     elif task_name == "ant":
         train_task = BraxTask(env_name="ant", test=False)
@@ -461,14 +429,11 @@ def main(config):
         os.makedirs(logs_dir)
 
     train_task, test_task, max_iter = create_task(config.task)
-    if config.task == "mnist":
-        policy = ConvNetPolicy()
-    else:
-        policy = MLPPolicy(
+    policy = MLPPolicy(
             input_dim=train_task.obs_shape[0],
             hidden_dims=[config.hidden_size] * 2,
             output_dim=train_task.act_shape[0],
-        )
+    )
     solver = create_solver(config, policy.num_params)
 
     # Train.
@@ -499,7 +464,7 @@ def main(config):
     images = []
     task_s = task_reset_fn(rollout_key)
     policy_s = policy_reset_fn(task_s)
-    images.append(CartPoleSwingUp.render(task_s, 0) if "cartpole" in config.task else SlimeVolley.render(task_s))
+    images.append(CartPoleSwingUp.render(task_s, 0))
     done = False
     step = 0
     while not done:
@@ -509,7 +474,7 @@ def main(config):
         done = bool(d[0])
         if step % 5 == 0:
             images.append(
-                CartPoleSwingUp.render(task_s, 0) if "cartpole" in config.task else SlimeVolley.render(task_s))
+                CartPoleSwingUp.render(task_s, 0))
 
     gif_file = file_name.replace("txt", "gif")
     images[0].save(
