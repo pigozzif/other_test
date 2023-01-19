@@ -482,7 +482,7 @@ if __name__ == "__main__":
     configs = parse_args()
     for task in ["ant"]:
         configs.task = task
-        for ea in ["noise", "ars"]:
+        for ea in ["noise"]:
             configs.solver = ea
             if configs.gpu_id is not None:
                 os.environ["CUDA_VISIBLE_DEVICES"] = configs.gpu_id
