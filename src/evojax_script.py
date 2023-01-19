@@ -197,17 +197,21 @@ class InnerMyES(Strategy):
         """`tell` performance data for strategy state update."""
         # Reconstruct noise from last mean/std estimates
         noise = (x - state.mean) / state.sigma
-        theta_grad = (
-                1.0 / (self.popsize * state.sigma) * jnp.dot(noise.T, fitness)
-        )
+        if self.is_openes:
+            theta_grad = (
+                    1.0 / (self.popsize * state.sigma) * jnp.dot(noise.T, fitness)
+            )
+        else:
+            theta_grad = (
+                    (1.0 / (self.popsize * state.sigma) * jnp.dot(noise.T, fitness))
+                    + np.random.normal(loc=0.0, scale=state.sigma * jnp.sqrt(state.opt_state.lrate),
+                                       size=state.mean.shape)
+            )
 
         # Grad update using optimizer instance - decay lrate if desired
         mean, opt_state = self.optimizer.step(
             state.mean, theta_grad, state.opt_state, params.opt_params
         )
-        if not self.is_openes:
-            mean += np.random.normal(loc=0.0, scale=1.0, size=state.mean.shape) * state.sigma * jnp.sqrt(
-                state.opt_state.lrate)
 
         opt_state = self.optimizer.update(opt_state, params.opt_params)
         sigma = exp_decay(state.sigma, params.sigma_decay, params.sigma_limit)
