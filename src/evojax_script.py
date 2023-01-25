@@ -483,7 +483,7 @@ def train(sim_mgr, file_name, solver, max_iters, num_tests, test_interval, is_qd
             if is_qd:
                 if isinstance(solver, MAPElites):
                     line["coverage"] = np.mean(solver.occupancy_lattice)
-                    line["qd.score"] = np.mean(solver.fitness_lattice[solver.qd_aux.fitness_lattice != float("-inf")])
+                    line["qd.score"] = np.mean(solver.fitness_lattice[solver.fitness_lattice != float("-inf")])
                 else:
                     line["coverage"] = np.mean(solver.qd_aux.occupancy_lattice)
                     line["qd.score"] = np.mean(
