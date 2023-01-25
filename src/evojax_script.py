@@ -37,10 +37,11 @@ import numpy as np
 
 from evojax.algo import ARS
 from evojax.policy import MLPPolicy
-from evojax.task.brax_task import BraxTask
+from evojax.task.brax_task import BraxTask, AntBDExtractor
+from evojax.task.base import BDExtractor, TaskState
 from evojax.task.cartpole import CartPoleSwingUp
-from evojax.algo.base import NEAlgorithm
-from evojax.util import create_logger
+from evojax.algo.base import NEAlgorithm, QualityDiversityMethod
+from evojax.util import create_logger, save_lattices
 
 from evojax import ObsNormalizer
 from evojax import SimManager
@@ -221,31 +222,28 @@ class InnerMyES(Strategy):
 class MyES(NEAlgorithm):
 
     def __init__(
-            self,
-            param_size: int,
-            pop_size: int,
-            optimizer_config: dict = {
-                "lrate_init": 0.01,  # Initial learning rate
-                "lrate_decay": 0.999,  # Multiplicative decay factor
-                "lrate_limit": 0.001,  # Smallest possible lrate
-                "beta_1": 0.99,  # beta_1 Adam
-                "beta_2": 0.999,  # beta_2 Adam
-                "eps": 1e-8,  # eps constant Adam denominator
-            },
-            init_stdev: float = 0.01,
-            decay_stdev: float = 0.999,
-            limit_stdev: float = 0.001,
-            w_decay: float = 0.0,
-            seed: int = 0,
-            logger: logging.Logger = None,
-            inner_es: Strategy = None
+        self,
+        param_size: int,
+        pop_size: int,
+        optimizer: str = "adam",
+        optimizer_config: dict = {
+            "lrate_init": 0.01,  # Initial learning rate
+            "lrate_decay": 0.999,  # Multiplicative decay factor
+            "lrate_limit": 0.001,  # Smallest possible lrate
+            "beta_1": 0.99,  # beta_1 Adam
+            "beta_2": 0.999,  # beta_2 Adam
+            "eps": 1e-8,  # eps constant Adam denominator
+        },
+        init_stdev: float = 0.01,
+        decay_stdev: float = 0.999,
+        limit_stdev: float = 0.001,
+        w_decay: float = 0.0,
+        seed: int = 0,
+        logger: logging.Logger = None,
+        inner_es: Strategy = None,
+        bd_extractor: BDExtractor = None
     ):
         # Delayed importing of evosax
-
-        if sys.version_info.minor < 7:
-            print("evosax, which is needed byOpenES, requires python>=3.7")
-            print("  please consider upgrading your Python version.")
-            sys.exit(1)
 
         if logger is None:
             self.logger = create_logger(name="MyES")
@@ -283,6 +281,9 @@ class MyES(NEAlgorithm):
             centered_rank=True, z_score=False, w_decay=w_decay, maximize=True
         )
 
+        if bd_extractor is not None:
+          self.qd_aux = InnerQDAux(bd_extractor, param_size, pop_size)
+
     def ask(self) -> jnp.ndarray:
         self.rand_key, ask_key = jax.random.split(self.rand_key)
         self.params, self.es_state = self.es.ask(
@@ -296,6 +297,8 @@ class MyES(NEAlgorithm):
         self.es_state = self.es.tell(
             self.params, fit_re, self.es_state, self.es_params
         )
+        if hasattr(self, "qd_aux"):
+          self.qd_aux.tell(fitness)
 
     @property
     def best_params(self) -> jnp.ndarray:
@@ -307,6 +310,58 @@ class MyES(NEAlgorithm):
             best_member=jnp.array(params, copy=True),
             mean=jnp.array(params, copy=True),
         )
+
+
+class InnerQDAux(QualityDiversityMethod):
+
+    def __init__(self,
+                 bd_extractor: BDExtractor,
+                 param_size: int,
+                 pop_size: int):
+        self.bd_names = [x[0] for x in bd_extractor.bd_spec]
+        self.bd_n_bins = [x[1] for x in bd_extractor.bd_spec]
+        self.params_lattice = jnp.zeros((np.prod(self.bd_n_bins), param_size))
+        self.fitness_lattice = -float("inf") * jnp.ones(np.prod(self.bd_n_bins))
+        self.occupancy_lattice = jnp.zeros(np.prod(self.bd_n_bins), dtype=jnp.int32)
+        self.population = None
+        self.bin_idx = jnp.zeros(pop_size, dtype=jnp.int32)
+
+        def get_bin_idx(task_state):
+            bd_idx = [task_state.__dict__[name].astype(int) for name in self.bd_names]
+            return jnp.ravel_multi_index(bd_idx, self.bd_n_bins, mode='clip')
+
+        self._get_bin_idx = jax.jit(jax.vmap(get_bin_idx))
+
+        def update_fitness_and_param(target_bin, bin_idx, fitness, fitness_lattice, param, param_lattice):
+            best_ix = jnp.where(bin_idx == target_bin, fitness, fitness_lattice.min()).argmax()
+            best_fitness = fitness[best_ix]
+            new_fitness_lattice = jnp.where(
+                best_fitness > fitness_lattice[target_bin],
+                best_fitness, fitness_lattice[target_bin])
+            new_param_lattice = jnp.where(
+                best_fitness > fitness_lattice[target_bin],
+                param[best_ix], param_lattice[target_bin])
+            return new_fitness_lattice, new_param_lattice
+
+        self._update_lattices = jax.jit(jax.vmap(update_fitness_and_param, in_axes=(0, None, None, None, None, None)))
+
+    def observe_bd(self, task_state: TaskState) -> None:
+        self.bin_idx = self._get_bin_idx(task_state)
+
+    def ask(self) -> jnp.ndarray:
+        raise NotImplementedError()
+
+    def tell(self, fitness: Union[np.ndarray, jnp.ndarray]):
+        unique_bins = jnp.unique(self.bin_idx)
+        fitness_lattice, params_lattice = self._update_lattices(unique_bins, self.bin_idx,
+                                                                fitness, self.fitness_lattice,
+                                                                self.population, self.params_lattice)
+        self.occupancy_lattice = self.occupancy_lattice.at[unique_bins].set(1)
+        self.fitness_lattice = self.fitness_lattice.at[unique_bins].set(fitness_lattice)
+        self.params_lattice = self.params_lattice.at[unique_bins].set(params_lattice)
+
+    def set_population(self, pop):
+        self.population = pop
 
 
 class FileListener(object):
@@ -348,7 +403,8 @@ def create_solver(config, num_params):
                 num_dims=num_params,
                 opt_name="adam",
                 is_openes=True
-            )
+            ),
+            bd_extractor=AntBDExtractor(logger=None) if config.task == "ant" else None
         )
     elif config.solver == "noise":
         return MyES(
@@ -364,7 +420,8 @@ def create_solver(config, num_params):
                 num_dims=num_params,
                 opt_name="adam",
                 is_openes=False
-            )
+            ),
+            bd_extractor=AntBDExtractor(logger=None) if config.task == "ant" else None
         )
     raise ValueError("Invalid solver name: {}".format(config.solver))
 
@@ -373,19 +430,21 @@ def create_task(task_name):
     if task_name.startswith("cartpole_"):
         train_task = CartPoleSwingUp(test=False, harder="hard" in task_name)
         test_task = CartPoleSwingUp(test=True, harder="easy" not in task_name)
-        max_iter = 300
     elif task_name == "ant":
-        train_task = BraxTask(env_name="ant", test=False)
-        test_task = BraxTask(env_name="ant", test=True)
-        max_iter = 500
+        bd_extractor = AntBDExtractor(logger=None)
+        train_task = BraxTask(env_name="ant", bd_extractor=bd_extractor, test=False)
+        test_task = BraxTask(env_name="ant", bd_extractor=bd_extractor, test=True)
     else:
         raise ValueError("Invalid task name: {}".format(task_name))
-    return train_task, test_task, max_iter
+    return train_task, test_task
 
 
-def train(sim_mgr, file_name, solver, max_iters, num_tests, test_interval):
+def train(sim_mgr, file_name, solver, max_iters, num_tests, test_interval, is_qd):
     print("Start training {} for {} iterations.".format(file_name, max_iters))
-    listener = FileListener(file_name, ["iteration", "elapsed.time", "best.fitness", "avg.test", "std.test"])
+    header = ["iteration", "evals", "elapsed.time", "best.fitness", "avg.test", "std.test"]
+    if is_qd:
+        header += ["coverage", "qd.score"]
+    listener = FileListener(file_name, header)
     start_time = time.perf_counter()
     best_fitness = float("-inf")
 
@@ -393,9 +452,12 @@ def train(sim_mgr, file_name, solver, max_iters, num_tests, test_interval):
 
         # Training.
         params = solver.ask()
-        train_scores, _ = sim_mgr.eval_params(params=params, test=False)
+        train_scores, bds = sim_mgr.eval_params(params=params, test=False)
         if np.max(train_scores) >= best_fitness:
             best_fitness = np.max(train_scores)
+        if is_qd:
+            solver.qd_aux.set_population(params)
+            solver.qd_aux.observe_bd(bds)
         solver.tell(fitness=train_scores)
 
         # Test periodically.
@@ -404,8 +466,13 @@ def train(sim_mgr, file_name, solver, max_iters, num_tests, test_interval):
             test_scores = np.array(sim_mgr.eval_params(params=best_params, test=True)[0])
             score_avg = np.mean(test_scores)
             score_std = np.std(test_scores)
-            listener.listen(**{"iteration": train_iters, "elapsed.time": time.perf_counter() - start_time,
-                               "best.fitness": best_fitness, "avg.test": score_avg, "std.test": score_std})
+            line = {"iteration": train_iters, "evals": train_iters * solver.pop_size,
+                    "elapsed.time": time.perf_counter() - start_time,
+                    "best.fitness": best_fitness, "avg.test": score_avg, "std.test": score_std}
+            if is_qd:
+                line["coverage"] = np.mean(solver.qd_aux.occupancy_lattice)
+                line["qd.score"] = np.mean(solver.qd_aux.fitness_lattice)
+            listener.listen(**line)
             if train_iters % 100 == 0:
                 print("Iter={0}, #tests={1}, score.avg={2:.2f}, score.std={3:.2f}".format(
                     train_iters, num_tests, score_avg, score_std))
@@ -417,15 +484,21 @@ def train(sim_mgr, file_name, solver, max_iters, num_tests, test_interval):
     score_std = np.std(scores)
     print("Iter={0}, #tests={1}, score.avg={2:.2f}, score.std={3:.2f}".format(
         train_iters, num_tests, score_avg, score_std))
+    if is_qd:
+        save_lattices(log_dir="/".join(file_name.split("/")[:-1]),
+                           file_name=file_name.split("/")[-1].replace("txt", "qd_lattices"),
+                           fitness_lattice=solver.qd_aux.fitness_lattice,
+                           params_lattice=solver.qd_aux.params_lattice,
+                           occupancy_lattice=solver.qd_aux.occupancy_lattice)
     print("time cost: {}s".format(time.perf_counter() - start_time))
 
 
-def main(config):
+def main(config, max_iter):
     logs_dir = "./output/{}/".format(config.task)
     if not os.path.isdir(logs_dir):
         os.makedirs(logs_dir)
 
-    train_task, test_task, max_iter = create_task(config.task)
+    train_task, test_task = create_task(config.task)
     policy = MLPPolicy(
             input_dim=train_task.obs_shape[0],
             hidden_dims=[config.hidden_size] * 2,
@@ -446,7 +519,7 @@ def main(config):
         obs_normalizer=ObsNormalizer(obs_shape=train_task.obs_shape) if config.task == "ant" else None
     )
     file_name = os.path.join(logs_dir, ".".join([config.solver, str(config.seed), "txt"]))
-    train(sim_mgr, file_name, solver, max_iter, config.num_tests, config.test_interval)
+    train(sim_mgr, file_name, solver, max_iter, config.num_tests, config.test_interval, config.task == "ant")
 
     # Generate a GIF to visualize the policy.
     if "cartpole" not in config.task:
@@ -482,8 +555,6 @@ if __name__ == "__main__":
     configs = parse_args()
     for task in ["ant"]:
         configs.task = task
-        for ea in ["noise"]:
-            configs.solver = ea
-            if configs.gpu_id is not None:
-                os.environ["CUDA_VISIBLE_DEVICES"] = configs.gpu_id
-            main(configs)
+        if configs.gpu_id is not None:
+            os.environ["CUDA_VISIBLE_DEVICES"] = configs.gpu_id
+        main(configs, 490 if configs.solver != "me" else )

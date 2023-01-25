@@ -17,12 +17,14 @@ from voxcraftevo.utils.utilities import set_seed, get_bound
 from voxcraftevo.evo.objectives import ObjectiveDict
 from voxcraftevo.fitness.evaluation import FitnessFunction
 
+__ACCURACIES__ = [0.1, 0.01, 0.001, 0.0001, 0.00001, 0.000001]
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="arguments")
     parser.add_argument("--seed", default=0, type=int, help="seed for random number generation")
-    parser.add_argument("--solver", default="kmeans", type=str, help="solver for the optimization")
     parser.add_argument("--popsize", default=100, type=int, help="population size for the ea")
+    parser.add_argument("--solver", default=None, type=str, help="ea")
     parser.add_argument("--elite", default=0.5, type=float, help="elite ratio for the ea")
     parser.add_argument("--output_dir", default="output", type=str,
                         help="relative path to output dir")
@@ -37,7 +39,7 @@ class MyListener(Listener):
 
     def __init__(self, file_path: str, header: Iterable[str]):
         super().__init__(file_path, header)
-        self.accuracies = [0.01, 0.001, 0.0001, 0.00001, 0.000001]
+        self.accuracies = __ACCURACIES__
 
     def listen(self, solver):
         with open(self._file, "a") as file:
@@ -99,16 +101,16 @@ class MyFitness(FitnessFunction):
         self.function = function
 
     def create_objectives_dict(self):
-        self.objective_dict.add_objective(name="fitness_score", maximize=True,
-                                          best_value=self.function.get_fitness_goptima(),
-                                          worst_value=float("-inf"))
+        self.objective_dict.add_objective(name="fitness_score", maximize=False,
+                                          best_value=- self.function.get_fitness_goptima(),
+                                          worst_value=float("inf"))
         return self.objective_dict
 
     def get_fitness(self, individual):
-        fit = self.function.evaluate(x=individual.genotype)
+        fit = - self.function.evaluate(x=individual.genotype)
         if not isinstance(fit, float):
             fit = fit[0]
-        return {"fitness_score": fit if fit is not None else float("-inf")}
+        return {"fitness_score": fit if fit is not None else float("inf")}
 
 
 class SoG(object):
@@ -128,9 +130,9 @@ class SoG(object):
     def _sample_means(self, delta):
         means = np.zeros((self.n, self.d))
         for i in range(self.n):
-            sample = np.random.uniform(low=self.get_lbound(0), high=self.get_ubound(0), size=(1, self.d))
+            sample = np.random.uniform(low=self.get_lbound(0) + 0.1, high=self.get_ubound(0) - 0.1, size=(1, self.d))
             while any([np.linalg.norm(sample - m) < delta for m in means]):
-                sample = np.random.uniform(low=self.get_lbound(0), high=self.get_ubound(0), size=(1, self.d))
+                sample = np.random.uniform(low=self.get_lbound(0) + 0.1, high=self.get_ubound(0) - 0.1, size=(1, self.d))
             means[i] = sample
         return means
 
@@ -163,15 +165,13 @@ class SoG(object):
         return self.n
 
     def get_maxfes(self):
-        return self.d * 100000
+        return self.d * 1000
 
     def how_many_goptima(self, pop, accuracy):
         count = 0
-        for ind in pop:
-            for m in self.means:
-                if np.linalg.norm(ind - m) < accuracy:
-                    count += 1
-                    break
+        for m in self.means:
+            best = min(pop, key=lambda x: np.linalg.norm(m - x))
+            count += 1 if abs(self.evaluate(x=m) - self.evaluate(x=best)) < accuracy else 0
         return count
 
 
@@ -179,22 +179,25 @@ if __name__ == "__main__":
     arguments = parse_args()
     set_seed(arguments.seed)
     seed = arguments.seed
-    if arguments.visualize == 1:
-        listener = VizListener(file_path=".".join([str(arguments.clustering), str(seed), str(arguments.popsize),
-                                                   str(arguments.elite), arguments.problem, "txt"]),
-                               header=["iteration", "elapsed.time", "best.fitness"] +
-                                      ["pr-{}".format(acc) for acc in [0.01, 0.001, 0.0001, 0.00001, 0.000001]])
+    if arguments.solver == "es":
+        file_name = ".".join([arguments.solver, str(seed), str(arguments.popsize), arguments.problem, "txt"])
     else:
-        listener = MyListener(file_path=".".join([str(arguments.clustering), str(seed), str(arguments.popsize),
-                                                  str(arguments.elite), arguments.problem, "txt"]),
+        file_name = ".".join([arguments.clustering, str(seed), str(arguments.popsize), str(arguments.elite),
+                              arguments.problem, "txt"])
+    if arguments.visualize == 1:
+        listener = VizListener(file_path=file_name,
+                               header=["iteration", "elapsed.time", "best.fitness"] +
+                                      ["pr-{}".format(acc) for acc in __ACCURACIES__])
+    else:
+        listener = MyListener(file_path=file_name,
                               header=["iteration", "elapsed.time", "best.fitness"] +
-                                     ["pr-{}".format(acc) for acc in [0.01, 0.001, 0.0001, 0.00001, 0.000001]])
+                                     ["pr-{}".format(acc) for acc in __ACCURACIES__])
     pid = int(arguments.problem.split("-")[0])
     fitness = MyFitness(function=CEC2013(pid) if pid != 0 else SoG(int(arguments.problem.split("-")[1]),
                                                                    int(arguments.problem.split("-")[2])))
     number_of_params = fitness.function.get_dimension()
     pop_size = arguments.popsize
-    gens = fitness.function.get_maxfes() // pop_size
+    gens = 200  # fitness.function.get_maxfes() // pop_size
     if arguments.solver == "es":
         evolver = Solver.create_solver(name="es",
                                        seed=seed,
@@ -204,16 +207,18 @@ if __name__ == "__main__":
                                        solution_mapper="direct",
                                        fitness_func=fitness,
                                        listener=listener,
-                                       sigma=0.3,
-                                       sigma_decay=0.999,
-                                       sigma_limit=0.01,
+                                       sigma=np.mean([math.floor(abs(fitness.function.get_ubound(i) -
+                                                                     fitness.function.get_lbound(i)))
+                                                      for i in range(fitness.function.get_dimension())]) * 0.1,
+                                       sigma_decay=1.0 - 1.0 / gens,
+                                       sigma_limit=0.0001,
                                        l_rate_init=0.02,
-                                       l_rate_decay=0.999,
+                                       l_rate_decay=1.0 - 1.0 / gens,
                                        l_rate_limit=0.001,
                                        range=get_bound(fitness.function),
                                        upper=2.0,
                                        lower=-1.0)
-    elif arguments.solver == "kmeans" or arguments.solver.startswith("em"):
+    else:
         evolver = Solver.create_solver(name="multimodal",
                                        seed=seed,
                                        pop_size=pop_size,
@@ -224,19 +229,17 @@ if __name__ == "__main__":
                                        fitness_func=fitness,
                                        listener=listener,
                                        elite_ratio=0.5,
-                                       clustering=arguments.solver,
+                                       clustering=arguments.clustering,
                                        sigma=np.mean([math.floor(abs(fitness.function.get_ubound(i) -
                                                                      fitness.function.get_lbound(i)))
-                                                      for i in range(fitness.function.get_dimension())]) * 0.001,
+                                                      for i in range(fitness.function.get_dimension())]) * 0.1,
                                        sigma_decay=1.0 - 1.0 / gens,
-                                       sigma_limit=0.001,
+                                       sigma_limit=0.0001,
                                        range=get_bound(fitness.function),
                                        upper=2.0,
                                        lower=-1.0)
-    else:
-        raise ValueError("Invalid solver name: {}".format(arguments.solver))
     start_time = time()
-    evolver.solve(max_gens=100)  # gens)
+    evolver.solve(max_gens=gens)
     if isinstance(listener, VizListener):
         listener.save_gif()
     sub.call("echo That took a total of {} seconds".format(time() - start_time), shell=True)

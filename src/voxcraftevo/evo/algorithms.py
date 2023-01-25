@@ -1,4 +1,5 @@
 import abc
+import math
 import time
 from typing import Dict, List
 
@@ -172,11 +173,16 @@ class EvolutionaryStrategy(EvolutionarySolver):
     def update_mode(self) -> None:
         noise = np.array([(x.genotype - self.mode) / self.sigma for x in self.pop])
         fitness = np.array([x.fitness["fitness_score"] for x in self.pop])
-        self.best_fitness = np.max(fitness)
+        self.best_fitness = np.min(fitness)
         theta_grad = (1.0 / (self.pop_size * self.sigma)) * np.dot(noise.T, fitness)
-        self.mode = self.optimizer.optimize(mean=self.mode, t=self.pop.gen, theta_grad=theta_grad)
+        self.mode = self.optimizer.optimize(mean=self.mode, t=self.pop.gen,
+                                            theta_grad=theta_grad)\
+                    + np.random.normal(loc=0.0, scale=math.sqrt(self.optimizer.l_rate) * self.sigma, size=self.num_dims)
 
     def evolve(self) -> None:
+        if self.pop.gen == 1:
+            self.update_mode()
+            return
         self.pop.clear()
         for child_genotype in self.build_offspring():
             self.pop.add_individual(genotype=child_genotype)
@@ -207,7 +213,8 @@ class MultimodalStrategy(EvolutionarySolver):
         self.num_dims = num_dims
         self.num_modes = num_modes
         self.best_fitness = float("-inf")
-        self.mixture = GaussianMixture(n_components=self.num_modes, covariance_type="diag", max_iter=1)
+        self.mixture = GaussianMixture(n_components=self.num_modes, covariance_type="full", max_iter=1)
+        self._init_mixture()
         self.clustering = clustering
         if self.clustering == "kmeans":
             self.optimizer = KMeans(n_clusters=self.num_modes, random_state=seed)
@@ -218,7 +225,8 @@ class MultimodalStrategy(EvolutionarySolver):
         self.mixture.fit(np.zeros((self.pop_size, self.num_dims)))
         self.mixture.weights_ = np.full(shape=(self.num_modes,), fill_value=1 / self.num_modes)
         self.mixture.means_ = np.zeros(shape=(self.num_modes, self.num_dims))
-        self.mixture.covariances_ = np.full(shape=(self.num_modes, self.num_dims), fill_value=self.sigma)
+        self.mixture.covariances_ = np.zeros(shape=(self.num_modes, self.num_dims,
+                                                    self.num_dims))  # np.full(shape=(self.num_modes, self.num_dims), fill_value=self.sigma)
 
     def build_offspring(self) -> List[Individual]:
         return list(self.mixture.means_) + list(self.mixture.sample(self.pop_size - self.num_modes)[0])
@@ -233,10 +241,24 @@ class MultimodalStrategy(EvolutionarySolver):
             if "p-" not in self.clustering:
                 self.mixture.weights_ = np.full(shape=(self.num_modes,), fill_value=1 / self.num_modes)
             if "s-" not in self.clustering:
-                self.mixture.covariances_ = np.full(shape=(self.num_modes, self.num_dims), fill_value=self.sigma)
+                self.mixture.covariances_ = self._estimate_cov()  # np.full(shape=(self.num_modes, self.num_dims), fill_value=self.sigma)
+
+    def _estimate_cov(self):
+        pop = self.pop if self.pop.gen > 1 else sorted(self.pop, key=lambda x: x.fitness["fitness_score"],
+                                                       reverse=True)[:int(self.elite_ratio * self.pop_size)]
+        labels = self.mixture.predict(np.array([ind.genotype for ind in pop]))
+        cov = np.zeros((self.num_modes, self.num_dims, self.num_dims))
+        for i in np.unique(labels):
+            species = [ind for ind, label in zip(pop, labels) if label == i]
+            cov[i] = np.cov(np.array([ind.genotype for ind in species]).T)
+        return cov
 
     def trim_population(self):
         survivors = []
+        if self.pop.gen == 1:
+            survivors.extend([ind for ind in sorted(self.pop, key=lambda x: x.fitness["fitness_score"], reverse=True)[
+                                             :int(self.elite_ratio * self.pop_size)]])
+            return survivors
         labels = self.mixture.predict(np.array([ind.genotype for ind in self.pop]))
         for i in np.unique(labels):
             species = [ind for ind, label in zip(self.pop, labels) if label == i]
@@ -246,7 +268,6 @@ class MultimodalStrategy(EvolutionarySolver):
 
     def evolve(self) -> None:
         if self.pop.gen == 1:
-            self._init_mixture()
             self.update_modes()
             return
         self.pop.clear()

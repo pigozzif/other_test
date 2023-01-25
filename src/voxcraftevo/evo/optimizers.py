@@ -13,9 +13,24 @@ class Optimizer(abc.ABC):
 
     @classmethod
     def create_optimizer(cls, name, **kwargs):
-        if name == "adam":
+        if name == "sgd":
+            return SGD(**kwargs)
+        elif name == "adam":
             return Adam(**kwargs)
         raise ValueError("Invalid optimizer name: {}".format(name))
+
+
+class SGD(Optimizer):
+
+    def __init__(self, num_dims, l_rate_init, l_rate_decay, l_rate_limit):
+        self.num_dims = num_dims
+        self.l_rate = l_rate_init
+        self.l_rate_decay = l_rate_decay
+        self.l_rate_limit = l_rate_limit
+
+    def optimize(self, mean, theta_grad):
+        new_mean = mean - self.l_rate * theta_grad
+        return new_mean
 
 
 class Adam(Optimizer):
