@@ -461,7 +461,6 @@ def train(sim_mgr, file_name, solver, max_iters, num_tests, test_interval, is_qd
         # Training.
         params = solver.ask()
         train_scores, bds = sim_mgr.eval_params(params=params, test=False)
-        print(train_scores.shape)
         if np.max(train_scores) >= best_fitness:
             best_fitness = np.max(train_scores)
         if is_qd:
