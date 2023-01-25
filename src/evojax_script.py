@@ -30,12 +30,11 @@ python train_cartpole.py --gpu-id=0 --pi --max-iter=20000 --pop-size=256 --cma
 import argparse
 import os
 import time
-import sys
 
 import logging
 import numpy as np
 
-from evojax.algo import ARS
+from evojax.algo import ARS, MAPElites
 from evojax.policy import MLPPolicy
 from evojax.task.brax_task import BraxTask, AntBDExtractor
 from evojax.task.base import BDExtractor, TaskState
@@ -222,26 +221,26 @@ class InnerMyES(Strategy):
 class MyES(NEAlgorithm):
 
     def __init__(
-        self,
-        param_size: int,
-        pop_size: int,
-        optimizer: str = "adam",
-        optimizer_config: dict = {
-            "lrate_init": 0.01,  # Initial learning rate
-            "lrate_decay": 0.999,  # Multiplicative decay factor
-            "lrate_limit": 0.001,  # Smallest possible lrate
-            "beta_1": 0.99,  # beta_1 Adam
-            "beta_2": 0.999,  # beta_2 Adam
-            "eps": 1e-8,  # eps constant Adam denominator
-        },
-        init_stdev: float = 0.01,
-        decay_stdev: float = 0.999,
-        limit_stdev: float = 0.001,
-        w_decay: float = 0.0,
-        seed: int = 0,
-        logger: logging.Logger = None,
-        inner_es: Strategy = None,
-        bd_extractor: BDExtractor = None
+            self,
+            param_size: int,
+            pop_size: int,
+            optimizer: str = "adam",
+            optimizer_config: dict = {
+                "lrate_init": 0.01,  # Initial learning rate
+                "lrate_decay": 0.999,  # Multiplicative decay factor
+                "lrate_limit": 0.001,  # Smallest possible lrate
+                "beta_1": 0.99,  # beta_1 Adam
+                "beta_2": 0.999,  # beta_2 Adam
+                "eps": 1e-8,  # eps constant Adam denominator
+            },
+            init_stdev: float = 0.01,
+            decay_stdev: float = 0.999,
+            limit_stdev: float = 0.001,
+            w_decay: float = 0.0,
+            seed: int = 0,
+            logger: logging.Logger = None,
+            inner_es: Strategy = None,
+            bd_extractor: BDExtractor = None
     ):
         # Delayed importing of evosax
 
@@ -282,7 +281,7 @@ class MyES(NEAlgorithm):
         )
 
         if bd_extractor is not None:
-          self.qd_aux = InnerQDAux(bd_extractor, param_size, pop_size)
+            self.qd_aux = InnerQDAux(bd_extractor, param_size, pop_size)
 
     def ask(self) -> jnp.ndarray:
         self.rand_key, ask_key = jax.random.split(self.rand_key)
@@ -298,7 +297,7 @@ class MyES(NEAlgorithm):
             self.params, fit_re, self.es_state, self.es_params
         )
         if hasattr(self, "qd_aux"):
-          self.qd_aux.tell(fitness)
+            self.qd_aux.tell(fitness)
 
     @property
     def best_params(self) -> jnp.ndarray:
@@ -423,6 +422,15 @@ def create_solver(config, num_params):
             ),
             bd_extractor=AntBDExtractor(logger=None) if config.task == "ant" else None
         )
+    elif config.solver == "me":
+        return MAPElites(
+            pop_size=1024,
+            param_size=num_params,
+            bd_extractor=AntBDExtractor(logger=None),
+            iso_sigma=0.05,
+            line_sigma=0.3,
+            seed=config.seed
+        )
     raise ValueError("Invalid solver name: {}".format(config.solver))
 
 
@@ -453,11 +461,15 @@ def train(sim_mgr, file_name, solver, max_iters, num_tests, test_interval, is_qd
         # Training.
         params = solver.ask()
         train_scores, bds = sim_mgr.eval_params(params=params, test=False)
+        print(train_scores.shape)
         if np.max(train_scores) >= best_fitness:
             best_fitness = np.max(train_scores)
         if is_qd:
-            solver.qd_aux.set_population(params)
-            solver.qd_aux.observe_bd(bds)
+            if isinstance(solver, MAPElites):
+                solver.observe_bd(bds)
+            else:
+                solver.qd_aux.set_population(params)
+                solver.qd_aux.observe_bd(bds)
         solver.tell(fitness=train_scores)
 
         # Test periodically.
@@ -470,8 +482,13 @@ def train(sim_mgr, file_name, solver, max_iters, num_tests, test_interval, is_qd
                     "elapsed.time": time.perf_counter() - start_time,
                     "best.fitness": best_fitness, "avg.test": score_avg, "std.test": score_std}
             if is_qd:
-                line["coverage"] = np.mean(solver.qd_aux.occupancy_lattice)
-                line["qd.score"] = np.mean(solver.qd_aux.fitness_lattice)
+                if isinstance(solver, MAPElites):
+                    line["coverage"] = np.mean(solver.occupancy_lattice)
+                    line["qd.score"] = np.mean(solver.fitness_lattice[solver.qd_aux.fitness_lattice != float("-inf")])
+                else:
+                    line["coverage"] = np.mean(solver.qd_aux.occupancy_lattice)
+                    line["qd.score"] = np.mean(
+                        solver.qd_aux.fitness_lattice[solver.qd_aux.fitness_lattice != float("-inf")])
             listener.listen(**line)
             if train_iters % 100 == 0:
                 print("Iter={0}, #tests={1}, score.avg={2:.2f}, score.std={3:.2f}".format(
@@ -486,10 +503,10 @@ def train(sim_mgr, file_name, solver, max_iters, num_tests, test_interval, is_qd
         train_iters, num_tests, score_avg, score_std))
     if is_qd:
         save_lattices(log_dir="/".join(file_name.split("/")[:-1]),
-                           file_name=file_name.split("/")[-1].replace("txt", "qd_lattices"),
-                           fitness_lattice=solver.qd_aux.fitness_lattice,
-                           params_lattice=solver.qd_aux.params_lattice,
-                           occupancy_lattice=solver.qd_aux.occupancy_lattice)
+                      file_name=file_name.split("/")[-1].replace("txt", "qd_lattices"),
+                      fitness_lattice=solver.qd_aux.fitness_lattice,
+                      params_lattice=solver.qd_aux.params_lattice,
+                      occupancy_lattice=solver.qd_aux.occupancy_lattice)
     print("time cost: {}s".format(time.perf_counter() - start_time))
 
 
@@ -500,9 +517,9 @@ def main(config, max_iter):
 
     train_task, test_task = create_task(config.task)
     policy = MLPPolicy(
-            input_dim=train_task.obs_shape[0],
-            hidden_dims=[config.hidden_size] * 2,
-            output_dim=train_task.act_shape[0],
+        input_dim=train_task.obs_shape[0],
+        hidden_dims=[config.hidden_size] * 2,
+        output_dim=train_task.act_shape[0],
     )
     solver = create_solver(config, policy.num_params)
 
@@ -557,4 +574,4 @@ if __name__ == "__main__":
         configs.task = task
         if configs.gpu_id is not None:
             os.environ["CUDA_VISIBLE_DEVICES"] = configs.gpu_id
-        main(configs, 490 if configs.solver != "me" else )
+        main(configs, 490 if configs.solver != "me" else 123)
