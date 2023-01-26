@@ -501,11 +501,18 @@ def train(sim_mgr, file_name, solver, max_iters, num_tests, test_interval, is_qd
     print("Iter={0}, #tests={1}, score.avg={2:.2f}, score.std={3:.2f}".format(
         train_iters, num_tests, score_avg, score_std))
     if is_qd:
-        save_lattices(log_dir="/".join(file_name.split("/")[:-1]),
-                      file_name=file_name.split("/")[-1].replace("txt", "qd_lattices"),
-                      fitness_lattice=solver.qd_aux.fitness_lattice,
-                      params_lattice=solver.qd_aux.params_lattice,
-                      occupancy_lattice=solver.qd_aux.occupancy_lattice)
+        if isinstance(solver, MAPElites):
+            save_lattices(log_dir="/".join(file_name.split("/")[:-1]),
+                          file_name=file_name.split("/")[-1].replace("txt", "qd_lattices"),
+                          fitness_lattice=solver.fitness_lattice,
+                          params_lattice=solver.params_lattice,
+                          occupancy_lattice=solver.occupancy_lattice)
+        else:
+            save_lattices(log_dir="/".join(file_name.split("/")[:-1]),
+                          file_name=file_name.split("/")[-1].replace("txt", "qd_lattices"),
+                          fitness_lattice=solver.qd_aux.fitness_lattice,
+                          params_lattice=solver.qd_aux.params_lattice,
+                          occupancy_lattice=solver.qd_aux.occupancy_lattice)
     print("time cost: {}s".format(time.perf_counter() - start_time))
 
 
