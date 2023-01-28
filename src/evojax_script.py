@@ -36,7 +36,7 @@ import numpy as np
 
 from evojax.algo import ARS, MAPElites
 from evojax.policy import MLPPolicy
-from evojax.task.brax_task import BraxTask, AntBDExtractor
+from evojax.task.brax_task import BraxTask, AntBDExtractor, BDExtractorState
 from evojax.task.base import BDExtractor, TaskState
 from evojax.task.cartpole import CartPoleSwingUp
 from evojax.algo.base import NEAlgorithm, QualityDiversityMethod
@@ -363,6 +363,50 @@ class InnerQDAux(QualityDiversityMethod):
         self.population = pop
 
 
+class HalfCheetahBDExtractor(BDExtractor):
+    """Behavior descriptor extractor for the HaldCheetah locomotion task."""
+
+    def __init__(self, logger):
+        # Each BD represents the quantized foot-ground contact time ratio.
+        bd_spec = [
+            ('feet1_contact', 10),
+            ('feet2_contact', 10)
+        ]
+        bd_state_spec = [
+            ('feet_contact_times', jnp.ndarray),
+            ('step_cnt', jnp.int32),
+            ('valid_mask', jnp.int32),
+        ]
+        super(HalfCheetahBDExtractor, self).__init__(bd_spec, bd_state_spec, BDExtractorState)
+        self._logger = logger
+
+    def init_state(self, extended_task_state):
+        return {
+            'feet_contact_times': jnp.zeros_like(
+                extended_task_state.feet_contact, dtype=jnp.int32),
+            'step_cnt': jnp.zeros((), dtype=jnp.int32),
+            'valid_mask': jnp.ones((), dtype=jnp.int32),
+        }
+
+    def update(self, extended_task_state, action, reward, done):
+        valid_mask = (
+                extended_task_state.valid_mask * (1 - done)).astype(jnp.int32)
+        return extended_task_state.replace(
+            feet_contact_times=(
+                    extended_task_state.feet_contact_times +
+                    extended_task_state.feet_contact * valid_mask),
+            step_cnt=extended_task_state.step_cnt + valid_mask,
+            valid_mask=valid_mask)
+
+    def summarize(self, extended_task_state):
+        feet_contact_ratio = (
+                extended_task_state.feet_contact_times /
+                extended_task_state.step_cnt[..., None]).mean(axis=1)
+        bds = {bd[0]: (feet_contact_ratio[:, i] * bd[1]).astype(jnp.int32)
+               for i, bd in enumerate(self.bd_spec)}
+        return extended_task_state.replace(**bds)
+
+
 class FileListener(object):
 
     def __init__(self, file_name, header):
@@ -376,7 +420,7 @@ class FileListener(object):
             file.write(";".join([str(kwargs.get(col, None)) for col in self.header]) + "\n")
 
 
-def create_solver(config, num_params):
+def create_solver(config, num_params, lrate_init=0.01, init_stdev=0.04):
     if config.solver == "ars":
         return ARS(
             param_size=num_params,
@@ -395,6 +439,7 @@ def create_solver(config, num_params):
             init_stdev=0.04,
             decay_stdev=0.999,
             limit_stdev=0.001,
+            optimizer="adam",
             optimizer_config={"lrate_init": 0.01, "lrate_decay": 0.999, "lrate_limit": 0.005, "momentum": 0.0},
             seed=config.seed,
             inner_es=InnerMyES(
@@ -403,16 +448,17 @@ def create_solver(config, num_params):
                 opt_name="adam",
                 is_openes=True
             ),
-            bd_extractor=AntBDExtractor(logger=None) if config.task == "ant" else None
+            bd_extractor=AntBDExtractor(logger=None) if config.task == "ant" else HalfCheetahBDExtractor(logger=None)
         )
     elif config.solver == "noise":
         return MyES(
             param_size=num_params,
             pop_size=256,
-            init_stdev=0.04,
+            init_stdev=init_stdev,
             decay_stdev=0.999,
             limit_stdev=0.001,
-            optimizer_config={"lrate_init": 0.01, "lrate_decay": 0.999, "lrate_limit": 0.005, "momentum": 0.0},
+            optimizer="adam",
+            optimizer_config={"lrate_init": lrate_init, "lrate_decay": 0.999, "lrate_limit": 0.001, "momentum": 0.0},
             seed=config.seed,
             inner_es=InnerMyES(
                 popsize=256,
@@ -420,13 +466,13 @@ def create_solver(config, num_params):
                 opt_name="adam",
                 is_openes=False
             ),
-            bd_extractor=AntBDExtractor(logger=None) if config.task == "ant" else None
+            bd_extractor=AntBDExtractor(logger=None) if config.task == "ant" else HalfCheetahBDExtractor(logger=None)
         )
     elif config.solver == "me":
         return MAPElites(
             pop_size=1024,
             param_size=num_params,
-            bd_extractor=AntBDExtractor(logger=None),
+            bd_extractor=AntBDExtractor(logger=None) if config.task == "ant" else HalfCheetahBDExtractor(logger=None),
             iso_sigma=0.05,
             line_sigma=0.3,
             seed=config.seed
@@ -434,7 +480,8 @@ def create_solver(config, num_params):
     raise ValueError("Invalid solver name: {}".format(config.solver))
 
 
-def create_task(task_name):
+def create_task(config):
+    task_name = config.task
     if task_name.startswith("cartpole_"):
         train_task = CartPoleSwingUp(test=False, harder="hard" in task_name)
         test_task = CartPoleSwingUp(test=True, harder="easy" not in task_name)
@@ -442,6 +489,10 @@ def create_task(task_name):
         bd_extractor = AntBDExtractor(logger=None)
         train_task = BraxTask(env_name="ant", bd_extractor=bd_extractor, test=False)
         test_task = BraxTask(env_name="ant", bd_extractor=bd_extractor, test=True)
+    elif task_name == "halfcheetah":
+        bd_extractor = HalfCheetahBDExtractor(logger=None)
+        train_task = BraxTask(env_name="halfcheetah", bd_extractor=bd_extractor, test=False)
+        test_task = BraxTask(env_name="halfcheetah", bd_extractor=bd_extractor, test=True)
     else:
         raise ValueError("Invalid task name: {}".format(task_name))
     return train_task, test_task
@@ -483,7 +534,7 @@ def train(sim_mgr, file_name, solver, max_iters, num_tests, test_interval, is_qd
             if is_qd:
                 if isinstance(solver, MAPElites):
                     line["coverage"] = np.mean(solver.occupancy_lattice)
-                    line["qd.score"] = np.mean(solver.fitness_lattice[solver.fitness_lattice != float("-inf")])
+                    line["qd.score"] = np.mean(solver.fitness_lattice[solver.qd_aux.fitness_lattice != float("-inf")])
                 else:
                     line["coverage"] = np.mean(solver.qd_aux.occupancy_lattice)
                     line["qd.score"] = np.mean(
@@ -501,33 +552,29 @@ def train(sim_mgr, file_name, solver, max_iters, num_tests, test_interval, is_qd
     print("Iter={0}, #tests={1}, score.avg={2:.2f}, score.std={3:.2f}".format(
         train_iters, num_tests, score_avg, score_std))
     if is_qd:
-        if isinstance(solver, MAPElites):
-            save_lattices(log_dir="/".join(file_name.split("/")[:-1]),
-                          file_name=file_name.split("/")[-1].replace("txt", "qd_lattices"),
-                          fitness_lattice=solver.fitness_lattice,
-                          params_lattice=solver.params_lattice,
-                          occupancy_lattice=solver.occupancy_lattice)
-        else:
-            save_lattices(log_dir="/".join(file_name.split("/")[:-1]),
-                          file_name=file_name.split("/")[-1].replace("txt", "qd_lattices"),
-                          fitness_lattice=solver.qd_aux.fitness_lattice,
-                          params_lattice=solver.qd_aux.params_lattice,
-                          occupancy_lattice=solver.qd_aux.occupancy_lattice)
+        save_lattices(log_dir="/".join(file_name.split("/")[:-1]),
+                      file_name=file_name.split("/")[-1].replace("txt", "qd_lattices"),
+                      fitness_lattice=solver.qd_aux.fitness_lattice,
+                      params_lattice=jnp.empty(()),
+                      occupancy_lattice=solver.qd_aux.occupancy_lattice)
     print("time cost: {}s".format(time.perf_counter() - start_time))
 
 
-def main(config, max_iter):
-    logs_dir = "./output/{}/".format(config.task)
+def main(config, max_iter, num_dims=2, lrate_init=None, init_stdev=None):
+    logs_dir = "./drive/My Drive/test/output/{}/".format(config.task)
     if not os.path.isdir(logs_dir):
         os.makedirs(logs_dir)
 
-    train_task, test_task = create_task(config.task)
+    train_task, test_task = create_task(config)
     policy = MLPPolicy(
-        input_dim=train_task.obs_shape[0],
-        hidden_dims=[config.hidden_size] * 2,
-        output_dim=train_task.act_shape[0],
-    )
-    solver = create_solver(config, policy.num_params)
+            input_dim=train_task.obs_shape[0],
+            hidden_dims=[config.hidden_size] * num_dims,
+            output_dim=train_task.act_shape[0],
+        )
+    if lrate_init is None or init_stdev is None:
+        solver = create_solver(config, policy.num_params)
+    else:
+        solver = create_solver(config, policy.num_params, lrate_init, init_stdev)
 
     # Train.
     sim_mgr = SimManager(
@@ -539,10 +586,16 @@ def main(config, max_iter):
         train_vec_task=train_task,
         valid_vec_task=test_task,
         seed=config.seed,
-        obs_normalizer=ObsNormalizer(obs_shape=train_task.obs_shape) if config.task == "ant" else None
+        obs_normalizer=ObsNormalizer(obs_shape=train_task.obs_shape) if config.task in ["ant", "halfcheetah"] else None
     )
-    file_name = os.path.join(logs_dir, ".".join([config.solver, str(config.seed), "txt"]))
-    train(sim_mgr, file_name, solver, max_iter, config.num_tests, config.test_interval, config.task == "ant")
+    if lrate_init is None or init_stdev is None:
+        file_name = os.path.join(logs_dir, ".".join([config.solver, str(config.seed), "txt"]))
+    else:
+        file_name = os.path.join(logs_dir, ".".join(
+            [config.solver, str(config.seed), str(num_dims), str(lrate_init).split(".")[1],
+             str(init_stdev).split(".")[1], "txt"]))
+    train(sim_mgr, file_name, solver, max_iter, config.num_tests, config.test_interval,
+          is_qd=config.task in ["ant", "halfcheetah"])
 
     # Generate a GIF to visualize the policy.
     if "cartpole" not in config.task:
@@ -557,7 +610,7 @@ def main(config, max_iter):
     images = []
     task_s = task_reset_fn(rollout_key)
     policy_s = policy_reset_fn(task_s)
-    images.append(CartPoleSwingUp.render(task_s, 0))
+    images.append(CartPoleSwingUp.render(task_s, 0) )
     done = False
     step = 0
     while not done:
