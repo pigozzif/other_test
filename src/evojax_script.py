@@ -561,7 +561,7 @@ def train(sim_mgr, file_name, solver, max_iters, num_tests, test_interval, is_qd
 
 
 def main(config, max_iter, num_dims=2, lrate_init=None, init_stdev=None):
-    logs_dir = "./drive/My Drive/test/output/{}/".format(config.task)
+    logs_dir = "./output/{}/".format(config.task)
     if not os.path.isdir(logs_dir):
         os.makedirs(logs_dir)
 
@@ -629,7 +629,7 @@ def main(config, max_iter, num_dims=2, lrate_init=None, init_stdev=None):
 
 if __name__ == "__main__":
     configs = parse_args()
-    for task in ["ant"]:
+    for task in ["halfcheetah"]:
         configs.task = task
         if configs.gpu_id is not None:
             os.environ["CUDA_VISIBLE_DEVICES"] = configs.gpu_id
