@@ -426,6 +426,7 @@ def create_solver(config, num_params, lrate_init=0.01, init_stdev=0.04):
             param_size=num_params,
             pop_size=1024,
             elite_ratio=0.05,
+            init_stdev=0.05,
             decay_stdev=0.999,
             limit_stdev=0.001,
             optimizer="adam",
@@ -493,6 +494,10 @@ def create_task(config):
         bd_extractor = HalfCheetahBDExtractor(logger=None)
         train_task = BraxTask(env_name="halfcheetah", bd_extractor=bd_extractor, test=False)
         test_task = BraxTask(env_name="halfcheetah", bd_extractor=bd_extractor, test=True)
+    elif task_name == "humanoid":
+        bd_extractor = HalfCheetahBDExtractor(logger=None)
+        train_task = BraxTask(env_name="humanoid", bd_extractor=bd_extractor, test=False)
+        test_task = BraxTask(env_name="humanoid", bd_extractor=bd_extractor, test=True)
     else:
         raise ValueError("Invalid task name: {}".format(task_name))
     return train_task, test_task
@@ -543,6 +548,21 @@ def train(sim_mgr, file_name, solver, max_iters, num_tests, test_interval, is_qd
             if train_iters % 100 == 0:
                 print("Iter={0}, #tests={1}, score.avg={2:.2f}, score.std={3:.2f}".format(
                     train_iters, num_tests, score_avg, score_std))
+            if train_iters % 50 == 0 and is_qd:
+                if isinstance(solver, MAPElites):
+                    save_lattices(log_dir="/".join(file_name.split("/")[:-1]),
+                                  file_name=file_name.split("/")[-1].replace("txt",
+                                                                             "{}.qd_lattices".format(train_iters)),
+                                  fitness_lattice=solver.fitness_lattice,
+                                  params_lattice=jnp.empty(()),
+                                  occupancy_lattice=solver.occupancy_lattice)
+                else:
+                    save_lattices(log_dir="/".join(file_name.split("/")[:-1]),
+                                  file_name=file_name.split("/")[-1].replace("txt",
+                                                                             "{}.qd_lattices".format(train_iters)),
+                                  fitness_lattice=solver.qd_aux.fitness_lattice,
+                                  params_lattice=jnp.empty(()),
+                                  occupancy_lattice=solver.qd_aux.occupancy_lattice)
 
     # Final test.
     best_params = solver.best_params
@@ -567,17 +587,17 @@ def train(sim_mgr, file_name, solver, max_iters, num_tests, test_interval, is_qd
     print("time cost: {}s".format(time.perf_counter() - start_time))
 
 
-def main(config, max_iter, num_dims=2, lrate_init=None, init_stdev=None):
+def main(config, max_iter, num_dims=2, lrate_init=None, init_stdev=None, is_qd=False):
     logs_dir = "./output/{}/".format(config.task)
     if not os.path.isdir(logs_dir):
         os.makedirs(logs_dir)
 
     train_task, test_task = create_task(config)
     policy = MLPPolicy(
-            input_dim=train_task.obs_shape[0],
-            hidden_dims=[config.hidden_size] * num_dims,
-            output_dim=train_task.act_shape[0],
-        )
+        input_dim=train_task.obs_shape[0],
+        hidden_dims=[config.hidden_size] * num_dims,
+        output_dim=train_task.act_shape[0],
+    )
     if lrate_init is None or init_stdev is None:
         solver = create_solver(config, policy.num_params)
     else:
@@ -593,7 +613,7 @@ def main(config, max_iter, num_dims=2, lrate_init=None, init_stdev=None):
         train_vec_task=train_task,
         valid_vec_task=test_task,
         seed=config.seed,
-        obs_normalizer=ObsNormalizer(obs_shape=train_task.obs_shape) if config.task in ["ant", "halfcheetah"] else None
+        obs_normalizer=ObsNormalizer(obs_shape=train_task.obs_shape) if "cartpole" not in config.task else None
     )
     if lrate_init is None or init_stdev is None:
         file_name = os.path.join(logs_dir, ".".join([config.solver, str(config.seed), "txt"]))
@@ -601,8 +621,7 @@ def main(config, max_iter, num_dims=2, lrate_init=None, init_stdev=None):
         file_name = os.path.join(logs_dir, ".".join(
             [config.solver, str(config.seed), str(num_dims), str(lrate_init).split(".")[1],
              str(init_stdev).split(".")[1], "txt"]))
-    train(sim_mgr, file_name, solver, max_iter, config.num_tests, config.test_interval,
-          is_qd=config.task in ["ant", "halfcheetah"])
+    train(sim_mgr, file_name, solver, max_iter, config.num_tests, config.test_interval, is_qd=is_qd)
 
     # Generate a GIF to visualize the policy.
     if "cartpole" not in config.task:
@@ -617,7 +636,7 @@ def main(config, max_iter, num_dims=2, lrate_init=None, init_stdev=None):
     images = []
     task_s = task_reset_fn(rollout_key)
     policy_s = policy_reset_fn(task_s)
-    images.append(CartPoleSwingUp.render(task_s, 0) )
+    images.append(CartPoleSwingUp.render(task_s, 0))
     done = False
     step = 0
     while not done:
@@ -636,8 +655,8 @@ def main(config, max_iter, num_dims=2, lrate_init=None, init_stdev=None):
 
 if __name__ == "__main__":
     configs = parse_args()
-    for task in ["halfcheetah"]:
+    for task in ["humanoid"]:
         configs.task = task
         if configs.gpu_id is not None:
             os.environ["CUDA_VISIBLE_DEVICES"] = configs.gpu_id
-        main(configs, 490 if configs.solver != "me" else 123)
+        main(configs, 490 if configs.solver not in ["me", "ars"] else 123, is_qd=True)
