@@ -366,12 +366,22 @@ class InnerQDAux(QualityDiversityMethod):
 class HalfCheetahBDExtractor(BDExtractor):
     """Behavior descriptor extractor for the HaldCheetah locomotion task."""
 
-    def __init__(self, logger):
+    def __init__(self, name, logger):
         # Each BD represents the quantized foot-ground contact time ratio.
-        bd_spec = [
-            ('feet1_contact', 10),
-            ('feet2_contact', 10)
-        ]
+        if name == "halfcheetah":
+            bd_spec = [
+                ('feet1_contact', 10),
+                ('feet2_contact', 10),
+                ('feet3_contact', 10)
+            ]
+        else:
+            bd_spec = [
+                ('feet1_contact', 10),
+                ('feet2_contact', 10),
+                ('feet3_contact', 10),
+                ('feet4_contact', 10),
+                ('feet5_contact', 10)
+            ]
         bd_state_spec = [
             ('feet_contact_times', jnp.ndarray),
             ('step_cnt', jnp.int32),
@@ -449,7 +459,7 @@ def create_solver(config, num_params, lrate_init=0.01, init_stdev=0.04):
                 opt_name="adam",
                 is_openes=True
             ),
-            bd_extractor=AntBDExtractor(logger=None) if config.task == "ant" else HalfCheetahBDExtractor(logger=None)
+            bd_extractor=AntBDExtractor(logger=None) if config.task == "ant" else HalfCheetahBDExtractor(name=config.task, logger=None)
         )
     elif config.solver == "noise":
         return MyES(
@@ -467,13 +477,13 @@ def create_solver(config, num_params, lrate_init=0.01, init_stdev=0.04):
                 opt_name="adam",
                 is_openes=False
             ),
-            bd_extractor=AntBDExtractor(logger=None) if config.task == "ant" else HalfCheetahBDExtractor(logger=None)
+            bd_extractor=AntBDExtractor(logger=None) if config.task == "ant" else HalfCheetahBDExtractor(name=config.task, logger=None)
         )
     elif config.solver == "me":
         return MAPElites(
             pop_size=1024,
             param_size=num_params,
-            bd_extractor=AntBDExtractor(logger=None) if config.task == "ant" else HalfCheetahBDExtractor(logger=None),
+            bd_extractor=AntBDExtractor(logger=None) if config.task == "ant" else HalfCheetahBDExtractor(name=config.task, logger=None),
             iso_sigma=0.05,
             line_sigma=0.3,
             seed=config.seed
@@ -491,11 +501,11 @@ def create_task(config):
         train_task = BraxTask(env_name="ant", bd_extractor=bd_extractor, test=False)
         test_task = BraxTask(env_name="ant", bd_extractor=bd_extractor, test=True)
     elif task_name == "halfcheetah":
-        bd_extractor = HalfCheetahBDExtractor(logger=None)
+        bd_extractor = HalfCheetahBDExtractor(name="halfcheetah", logger=None)
         train_task = BraxTask(env_name="halfcheetah", bd_extractor=bd_extractor, test=False)
         test_task = BraxTask(env_name="halfcheetah", bd_extractor=bd_extractor, test=True)
     elif task_name == "humanoid":
-        bd_extractor = HalfCheetahBDExtractor(logger=None)
+        bd_extractor = HalfCheetahBDExtractor(name="humanoid", logger=None)
         train_task = BraxTask(env_name="humanoid", bd_extractor=bd_extractor, test=False)
         test_task = BraxTask(env_name="humanoid", bd_extractor=bd_extractor, test=True)
     else:
@@ -655,8 +665,6 @@ def main(config, max_iter, num_dims=2, lrate_init=None, init_stdev=None, is_qd=F
 
 if __name__ == "__main__":
     configs = parse_args()
-    for task in ["humanoid"]:
-        configs.task = task
-        if configs.gpu_id is not None:
-            os.environ["CUDA_VISIBLE_DEVICES"] = configs.gpu_id
-        main(configs, 490 if configs.solver not in ["me", "ars"] else 123, is_qd=True)
+    if configs.gpu_id is not None:
+        os.environ["CUDA_VISIBLE_DEVICES"] = configs.gpu_id
+    main(configs, 490 if configs.solver not in ["me", "ars"] else 123, is_qd=True)

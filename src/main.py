@@ -50,7 +50,7 @@ class MyListener(Listener):
 
     def _get_recall(self, solver, accuracy):
         pop = np.array([ind.genotype for ind in solver.pop])
-        if isinstance(solver.fitness_func.function, SoG):
+        if isinstance(solver.fitness_func.function, Sphere):
             count = solver.fitness_func.function.how_many_goptima(pop, accuracy)
         else:
             count, _ = how_many_goptima(pop, solver.fitness_func.function, accuracy)
@@ -150,7 +150,7 @@ class SoG(object):
         return self.d
 
     def get_lbound(self, i):
-        return -1.0
+        return -3.0
 
     def get_ubound(self, i):
         return 1.0
@@ -175,6 +175,36 @@ class SoG(object):
         return count
 
 
+class Sphere(object):
+
+    def __init__(self, d=2):
+        self.d = d
+
+    def get_dimension(self):
+        return self.d
+
+    def get_lbound(self, i):
+        return -1.0
+
+    def get_ubound(self, i):
+        return 1.0
+
+    def evaluate(self, x):
+        return - np.sum(np.square(x + 1))
+
+    def get_fitness_goptima(self):
+        return np.zeros(self.get_dimension())
+
+    def get_no_goptima(self):
+        return 1
+
+    def get_maxfes(self):
+        return 10000
+
+    def how_many_goptima(self, pop, accuracy):
+        return 0
+
+
 if __name__ == "__main__":
     arguments = parse_args()
     set_seed(arguments.seed)
@@ -193,11 +223,11 @@ if __name__ == "__main__":
                               header=["iteration", "elapsed.time", "best.fitness"] +
                                      ["pr-{}".format(acc) for acc in __ACCURACIES__])
     pid = int(arguments.problem.split("-")[0])
-    fitness = MyFitness(function=CEC2013(pid) if pid != 0 else SoG(int(arguments.problem.split("-")[1]),
-                                                                   int(arguments.problem.split("-")[2])))
+    fitness = MyFitness(function=CEC2013(pid) if pid != 0 else Sphere())#SoG(int(arguments.problem.split("-")[1]),
+                                                                   #int(arguments.problem.split("-")[2])))
     number_of_params = fitness.function.get_dimension()
     pop_size = arguments.popsize
-    gens = 200  # fitness.function.get_maxfes() // pop_size
+    gens = fitness.function.get_maxfes() // pop_size * 2
     if arguments.solver == "es":
         evolver = Solver.create_solver(name="es",
                                        seed=seed,
@@ -207,13 +237,11 @@ if __name__ == "__main__":
                                        solution_mapper="direct",
                                        fitness_func=fitness,
                                        listener=listener,
-                                       sigma=np.mean([math.floor(abs(fitness.function.get_ubound(i) -
-                                                                     fitness.function.get_lbound(i)))
-                                                      for i in range(fitness.function.get_dimension())]) * 0.1,
-                                       sigma_decay=1.0 - 1.0 / gens,
+                                       sigma=0.3,
+                                       sigma_decay=0.999,
                                        sigma_limit=0.0001,
-                                       l_rate_init=0.02,
-                                       l_rate_decay=1.0 - 1.0 / gens,
+                                       l_rate_init=0.01,
+                                       l_rate_decay=0.999,
                                        l_rate_limit=0.001,
                                        range=get_bound(fitness.function),
                                        upper=2.0,
