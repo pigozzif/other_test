@@ -312,58 +312,6 @@ class MyES(NEAlgorithm):
         )
 
 
-class InnerQDAux(QualityDiversityMethod):
-
-    def __init__(self,
-                 bd_extractor: BDExtractor,
-                 param_size: int,
-                 pop_size: int):
-        self.bd_names = [x[0] for x in bd_extractor.bd_spec]
-        self.bd_n_bins = [x[1] for x in bd_extractor.bd_spec]
-        self.params_lattice = jnp.zeros((np.prod(self.bd_n_bins), param_size))
-        self.fitness_lattice = -float("inf") * jnp.ones(np.prod(self.bd_n_bins))
-        self.occupancy_lattice = jnp.zeros(np.prod(self.bd_n_bins), dtype=jnp.int32)
-        self.population = None
-        self.bin_idx = jnp.zeros(pop_size, dtype=jnp.int32)
-
-        def get_bin_idx(task_state):
-            bd_idx = [task_state.__dict__[name].astype(int) for name in self.bd_names]
-            return jnp.ravel_multi_index(bd_idx, self.bd_n_bins, mode='clip')
-
-        self._get_bin_idx = jax.jit(jax.vmap(get_bin_idx))
-
-        def update_fitness_and_param(target_bin, bin_idx, fitness, fitness_lattice, param, param_lattice):
-            best_ix = jnp.where(bin_idx == target_bin, fitness, fitness_lattice.min()).argmax()
-            best_fitness = fitness[best_ix]
-            new_fitness_lattice = jnp.where(
-                best_fitness > fitness_lattice[target_bin],
-                best_fitness, fitness_lattice[target_bin])
-            new_param_lattice = jnp.where(
-                best_fitness > fitness_lattice[target_bin],
-                param[best_ix], param_lattice[target_bin])
-            return new_fitness_lattice, new_param_lattice
-
-        self._update_lattices = jax.jit(jax.vmap(update_fitness_and_param, in_axes=(0, None, None, None, None, None)))
-
-    def observe_bd(self, task_state: TaskState) -> None:
-        self.bin_idx = self._get_bin_idx(task_state)
-
-    def ask(self) -> jnp.ndarray:
-        raise NotImplementedError()
-
-    def tell(self, fitness: Union[np.ndarray, jnp.ndarray]):
-        unique_bins = jnp.unique(self.bin_idx)
-        fitness_lattice, params_lattice = self._update_lattices(unique_bins, self.bin_idx,
-                                                                fitness, self.fitness_lattice,
-                                                                self.population, self.params_lattice)
-        self.occupancy_lattice = self.occupancy_lattice.at[unique_bins].set(1)
-        self.fitness_lattice = self.fitness_lattice.at[unique_bins].set(fitness_lattice)
-        self.params_lattice = self.params_lattice.at[unique_bins].set(params_lattice)
-
-    def set_population(self, pop):
-        self.population = pop
-
-
 class HalfCheetahBDExtractor(BDExtractor):
     """Behavior descriptor extractor for the HaldCheetah locomotion task."""
 
