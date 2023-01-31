@@ -34,7 +34,7 @@ import time
 import logging
 import numpy as np
 
-from evojax.algo import ARS, MAPElites
+from evojax.algo import MAPElites
 from evojax.policy import MLPPolicy
 from evojax.task.brax_task import BraxTask, AntBDExtractor, BDExtractorState
 from evojax.task.base import BDExtractor, TaskState
@@ -52,6 +52,7 @@ from typing import Tuple, Optional, Union
 from flax import struct
 
 from evosax_support import GradientOptimizer, Strategy, OptParams, OptState, exp_decay, FitnessShaper
+from algorithms import iAMaLGaM, CMA_ES, ARS
 
 
 def parse_args():
@@ -441,7 +442,19 @@ def create_solver(config, num_params, lrate_init=0.01, init_stdev=0.04):
             limit_stdev=0.001,
             optimizer="adam",
             optimizer_config={"lrate_init": 0.01, "lrate_decay": 0.999, "lrate_limit": 0.001, "momentum": 0.0},
-            seed=config.seed
+            seed=config.seed,
+            bd_extractor=AntBDExtractor(logger=None) if config.task == "ant" else HalfCheetahBDExtractor(
+                name=config.task, logger=None)
+        )
+    elif config.solver == "cmaes":
+        return CMA_ES(
+            pop_size=256,
+            param_size=num_params,
+            elite_ratio=0.5,
+            init_stdev=0.1,
+            seed=config.seed,
+            bd_extractor=AntBDExtractor(logger=None) if config.task == "ant" else HalfCheetahBDExtractor(
+                name=config.task, logger=None)
         )
     elif config.solver == "openes":
         return MyES(
@@ -459,7 +472,8 @@ def create_solver(config, num_params, lrate_init=0.01, init_stdev=0.04):
                 opt_name="adam",
                 is_openes=True
             ),
-            bd_extractor=AntBDExtractor(logger=None) if config.task == "ant" else HalfCheetahBDExtractor(name=config.task, logger=None)
+            bd_extractor=AntBDExtractor(logger=None) if config.task == "ant" else HalfCheetahBDExtractor(
+                name=config.task, logger=None)
         )
     elif config.solver == "noise":
         return MyES(
@@ -477,16 +491,31 @@ def create_solver(config, num_params, lrate_init=0.01, init_stdev=0.04):
                 opt_name="adam",
                 is_openes=False
             ),
-            bd_extractor=AntBDExtractor(logger=None) if config.task == "ant" else HalfCheetahBDExtractor(name=config.task, logger=None)
+            bd_extractor=AntBDExtractor(logger=None) if config.task == "ant" else HalfCheetahBDExtractor(
+                name=config.task, logger=None)
         )
     elif config.solver == "me":
         return MAPElites(
             pop_size=1024,
             param_size=num_params,
-            bd_extractor=AntBDExtractor(logger=None) if config.task == "ant" else HalfCheetahBDExtractor(name=config.task, logger=None),
+            bd_extractor=AntBDExtractor(logger=None) if config.task == "ant" else HalfCheetahBDExtractor(
+                name=config.task, logger=None),
             iso_sigma=0.05,
             line_sigma=0.3,
             seed=config.seed
+        )
+    elif config.solver == "iamalgam":
+        return iAMaLGaM(
+            param_size=num_params,
+            pop_size=256,
+            elite_ratio=0.35,
+            full_covariance=False,
+            init_stdev=0.01,
+            decay_stdev=0.999,
+            limit_stdev=0.001,
+            seed=config.seed,
+            bd_extractor=AntBDExtractor(logger=None) if config.task == "ant" else HalfCheetahBDExtractor(
+                name=config.task, logger=None)
         )
     raise ValueError("Invalid solver name: {}".format(config.solver))
 
