@@ -36,9 +36,11 @@ import numpy as np
 
 from evojax.algo import MAPElites
 from evojax.policy import MLPPolicy
+from evojax.policy.convnet import ConvNetPolicy
 from evojax.task.brax_task import BraxTask, AntBDExtractor, BDExtractorState
 from evojax.task.base import BDExtractor, TaskState
 from evojax.task.cartpole import CartPoleSwingUp
+from evojax.task.mnist import MNIST
 from evojax.algo.base import NEAlgorithm, QualityDiversityMethod
 from evojax.util import create_logger, save_lattices
 
@@ -52,7 +54,7 @@ from typing import Tuple, Optional, Union
 from flax import struct
 
 from evosax_support import GradientOptimizer, Strategy, OptParams, OptState, exp_decay, FitnessShaper
-from algorithms import iAMaLGaM, CMA_ES, ARS
+from algorithms import iAMaLGaM, CMA_ES, ARS, InnerQDAux
 
 
 def parse_args():
@@ -379,16 +381,16 @@ class FileListener(object):
             file.write(";".join([str(kwargs.get(col, None)) for col in self.header]) + "\n")
 
 
-def create_solver(config, num_params, lrate_init=0.01, init_stdev=0.04):
+def create_solver(config, num_params, lrate_init=0.01, init_stdev=0.03):
     if config.solver == "ars":
         return ARS(
             param_size=num_params,
-            pop_size=1024,
-            elite_ratio=0.05,
-            init_stdev=0.05,
+            pop_size=100,
+            elite_ratio=0.1,
+            init_stdev=0.03,
             decay_stdev=0.999,
-            limit_stdev=0.001,
-            optimizer="adam",
+            limit_stdev=0.01,
+            optimizer="sgd",
             optimizer_config={"lrate_init": 0.01, "lrate_decay": 0.999, "lrate_limit": 0.001, "momentum": 0.0},
             seed=config.seed,
             bd_extractor=AntBDExtractor(logger=None) if config.task == "ant" else HalfCheetahBDExtractor(
@@ -407,7 +409,7 @@ def create_solver(config, num_params, lrate_init=0.01, init_stdev=0.04):
     elif config.solver == "openes":
         return MyES(
             param_size=num_params,
-            pop_size=256,
+            pop_size=100,
             init_stdev=0.04,
             decay_stdev=0.999,
             limit_stdev=0.001,
@@ -415,7 +417,7 @@ def create_solver(config, num_params, lrate_init=0.01, init_stdev=0.04):
             optimizer_config={"lrate_init": 0.01, "lrate_decay": 0.999, "lrate_limit": 0.005, "momentum": 0.0},
             seed=config.seed,
             inner_es=InnerMyES(
-                popsize=256,
+                popsize=100,
                 num_dims=num_params,
                 opt_name="adam",
                 is_openes=True
@@ -426,15 +428,15 @@ def create_solver(config, num_params, lrate_init=0.01, init_stdev=0.04):
     elif config.solver == "noise":
         return MyES(
             param_size=num_params,
-            pop_size=256,
+            pop_size=100,
             init_stdev=init_stdev,
             decay_stdev=0.999,
-            limit_stdev=0.001,
+            limit_stdev=0.01,
             optimizer="adam",
             optimizer_config={"lrate_init": lrate_init, "lrate_decay": 0.999, "lrate_limit": 0.001, "momentum": 0.0},
             seed=config.seed,
             inner_es=InnerMyES(
-                popsize=256,
+                popsize=100,
                 num_dims=num_params,
                 opt_name="adam",
                 is_openes=False
@@ -455,9 +457,9 @@ def create_solver(config, num_params, lrate_init=0.01, init_stdev=0.04):
     elif config.solver == "iamalgam":
         return iAMaLGaM(
             param_size=num_params,
-            pop_size=256,
+            pop_size=100,
             elite_ratio=0.35,
-            full_covariance=False,
+            full_covariance=True,
             init_stdev=0.01,
             decay_stdev=0.999,
             limit_stdev=0.001,
@@ -473,6 +475,9 @@ def create_task(config):
     if task_name.startswith("cartpole_"):
         train_task = CartPoleSwingUp(test=False, harder="hard" in task_name)
         test_task = CartPoleSwingUp(test=True, harder="easy" not in task_name)
+    elif task_name == "mnist":
+        train_task = MNIST(batch_size=1024, test=False)
+        test_task = MNIST(batch_size=1024, test=True)
     elif task_name == "ant":
         bd_extractor = AntBDExtractor(logger=None)
         train_task = BraxTask(env_name="ant", bd_extractor=bd_extractor, test=False)
@@ -580,11 +585,14 @@ def main(config, max_iter, num_dims=2, lrate_init=None, init_stdev=None, is_qd=F
         os.makedirs(logs_dir)
 
     train_task, test_task = create_task(config)
-    policy = MLPPolicy(
-        input_dim=train_task.obs_shape[0],
-        hidden_dims=[config.hidden_size] * num_dims,
-        output_dim=train_task.act_shape[0],
-    )
+    if config.task == "mnist":
+        policy = ConvNetPolicy()
+    else:
+        policy = MLPPolicy(
+            input_dim=train_task.obs_shape[0],
+            hidden_dims=[config.hidden_size] * num_dims,
+            output_dim=train_task.act_shape[0],
+        )
     if lrate_init is None or init_stdev is None:
         solver = create_solver(config, policy.num_params)
     else:
@@ -644,4 +652,4 @@ if __name__ == "__main__":
     configs = parse_args()
     if configs.gpu_id is not None:
         os.environ["CUDA_VISIBLE_DEVICES"] = configs.gpu_id
-    main(configs, 490 if configs.solver not in ["me", "ars"] else 123, is_qd=True)
+    main(configs, 2000, is_qd=False)
